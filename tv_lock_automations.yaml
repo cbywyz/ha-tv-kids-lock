@@ -1,0 +1,213 @@
+# 小米电视家长管控 —— 完整自动化合集（可整体粘贴进 automations.yaml）
+# 配套教程见 README.md。使用前请把 media_player.living_room_tv / media_player.android_tv
+# 替换为你自己的电视实体 ID；helper 定义见 helpers-example.yaml。
+
+# ── 音量：面板滑条下发（停手 2 秒防刷屏）────────────────────────
+- id: tv_apply_volume
+  alias: "[电视] 应用自定义音量"
+  description: 面板改「电视音量」数值 → 停手 2 秒后自动下发到电视
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_number.dian_shi_yin_liang
+      for: "00:00:02"
+  action:
+    - service: media_player.volume_set
+      target:
+        entity_id: media_player.living_room_tv
+      data:
+        volume_level: "{{ states('input_number.dian_shi_yin_liang') | float(0) / 100 }}"
+      continue_on_error: true
+    # Android TV 辅助通道（没接就删掉这一段）
+    - service: media_player.volume_set
+      target:
+        entity_id: media_player.android_tv
+      data:
+        volume_level: "{{ states('input_number.dian_shi_yin_liang') | float(0) / 100 }}"
+      continue_on_error: true
+
+# ── 音量：上限锁（超了拉回，0.5% 死区防自触发）──────────────────
+- id: tv_volume_lock
+  alias: "[电视] 音量锁定（上限模式，超了拉回）"
+  description: >-
+    打开「电视音量锁定」后，「电视音量」里填的数值就是音量上限：
+    可以随便调小，但只要超过上限就自动拉回到上限值。
+    只认 0.5% 以上的超限，避免自己拉回时反复触发。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      attribute: volume_level
+  condition:
+    - condition: state
+      entity_id: input_boolean.dian_shi_yin_liang_suo_ding
+      state: "on"
+    - condition: template
+      value_template: >-
+        {% set target = states('input_number.dian_shi_yin_liang') | float(0) / 100 %}
+        {% set cur = state_attr(trigger.entity_id, 'volume_level') %}
+        {{ cur is not none and cur - target > 0.005 }}
+  action:
+    - service: media_player.volume_set
+      target:
+        entity_id: "{{ trigger.entity_id }}"
+      data:
+        volume_level: "{{ states('input_number.dian_shi_yin_liang') | float(0) / 100 }}"
+
+# ── 信号源：锁定生效立即强切（不信任 source 缓存，连发两次防云丢指令）──
+- id: tv_lock_engage_switch
+  alias: "[电视] 锁定生效立即强切信号源"
+  description: 锁定开关打开且电视开着 → 立刻切到锁定源，5 秒后补发一次。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+      to: "on"
+  condition:
+    - condition: state
+      entity_id: media_player.living_room_tv
+      state: "on"
+  action:
+    - service: media_player.select_source
+      target:
+        entity_id: media_player.living_room_tv
+      data:
+        source: "{{ states('input_select.tv_lock_source') }}"
+    - delay: "00:00:05"
+    - service: media_player.select_source
+      target:
+        entity_id: media_player.living_room_tv
+      data:
+        source: "{{ states('input_select.tv_lock_source') }}"
+
+# ── 信号源：换台拦截 + 每分钟兜底 ───────────────────────────────
+- id: tv_source_lock
+  alias: "[电视] 信号源锁定"
+  description: 锁定开启时信号源被切走自动切回；云指令偶发限流，每分钟兜底重发直到切回。
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+      to: "on"
+    - platform: state
+      entity_id: media_player.living_room_tv
+    - platform: time_pattern
+      minutes: "/1"
+  condition:
+    - condition: state
+      entity_id: input_boolean.tv_source_lock
+      state: "on"
+    - condition: template
+      value_template: >-
+        {% set want = states('input_select.tv_lock_source') %}
+        {% set cur = state_attr('media_player.living_room_tv','source') %}
+        {{ states('media_player.living_room_tv') == 'on'
+           and (cur is none or cur != want) }}
+  action:
+    - service: media_player.select_source
+      target:
+        entity_id: media_player.living_room_tv
+      data:
+        source: "{{ states('input_select.tv_lock_source') }}"
+
+# ── 儿童定时锁：启动 / 取消 ─────────────────────────────────────
+- id: tv_lock_countdown_start
+  alias: "[电视] 频道锁定倒计时启动"
+  description: 填「儿童观看时长（分钟）」即启动倒计时；改数字重新计时，填 0 取消。
+  mode: restart
+  trigger:
+    - platform: state
+      entity_id: input_number.er_tong_guan_kan_shi_chang
+  condition:
+    - condition: template
+      value_template: "{{ states('input_number.er_tong_guan_kan_shi_chang') | int(0) > 0 }}"
+  action:
+    - service: timer.start
+      target:
+        entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+      data:
+        duration: >-
+          {% set m = states('input_number.er_tong_guan_kan_shi_chang') | int(0) %}
+          {{ '{:02d}:{:02d}:00'.format(m // 60, m % 60) }}
+
+- id: tv_lock_countdown_cancel
+  alias: "[电视] 取消频道锁定倒计时"
+  description: 时长调到 0 立刻取消倒计时。
+  mode: single
+  trigger:
+    - platform: numeric_state
+      entity_id: input_number.er_tong_guan_kan_shi_chang
+      below: 1
+  action:
+    - service: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+
+# ── 儿童定时锁：到点自动上锁（并按需启动解除倒计时）──────────────
+- id: tv_lock_countdown_finish
+  alias: "[电视] 倒计时到点自动锁频道"
+  description: 倒计时结束 → 打开信号源锁定；若「自动解除锁定时长」>0 则同时启动解除倒计时。
+  mode: single
+  trigger:
+    - platform: event
+      event_type: timer.finished
+      event_data:
+        entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+  action:
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ben_ci_wei_dao_ji_shi_suo_ding
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ states('input_number.suo_ding_shi_chang') | int(0) > 0 }}"
+          sequence:
+            - service: timer.start
+              target:
+                entity_id: timer.pin_dao_suo_ding_jie_chu
+              data:
+                duration: >-
+                  {% set m = states('input_number.suo_ding_shi_chang') | int(0) %}
+                  {{ '{:02d}:{:02d}:00'.format(m // 60, m % 60) }}
+
+# ── 儿童定时锁：到点自动解锁 / 手动解锁清理 ─────────────────────
+- id: tv_lock_release_finish
+  alias: "[电视] 定时锁定到点自动解除"
+  description: 解除倒计时结束，且本次确实是倒计时锁的 → 自动解锁（手动锁不受影响）。
+  mode: single
+  trigger:
+    - platform: event
+      event_type: timer.finished
+      event_data:
+        entity_id: timer.pin_dao_suo_ding_jie_chu
+  condition:
+    - condition: state
+      entity_id: input_boolean.ben_ci_wei_dao_ji_shi_suo_ding
+      state: "on"
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ben_ci_wei_dao_ji_shi_suo_ding
+
+- id: tv_lock_unlock_cleanup
+  alias: "[电视] 手动解锁时清理定时标记"
+  description: 锁定被关掉（手动解锁）→ 清标记 + 取消解除倒计时，防止到点误解锁。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+      to: "off"
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ben_ci_wei_dao_ji_shi_suo_ding
+    - service: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_jie_chu
