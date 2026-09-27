@@ -1,4 +1,4 @@
-# 小米电视家长管控 —— 完整自动化合集（可整体粘贴进 automations.yaml）
+# 电视家长管控 —— 完整自动化合集（可整体粘贴进 automations.yaml）
 # 配套教程见 README.md。使用前请把 media_player.living_room_tv / media_player.android_tv
 # 替换为你自己的电视实体 ID；helper 定义见 helpers-example.yaml。
 
@@ -212,6 +212,64 @@
       target:
         entity_id: timer.pin_dao_suo_ding_jie_chu
 
+# ── 倒计时可暂停：电视关机满 10 秒 → 暂停「观看」类倒计时 ──
+- id: tv_timer_pause_when_off
+  alias: "[电视] 关机暂停观看倒计时"
+  description: 电视关机满 10 秒 → 暂停进行中的观看倒计时/续杯倒计时，不再空耗时间。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      to: "off"
+      for: "00:00:10"
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+              state: "active"
+          sequence:
+            - service: timer.pause
+              target:
+                entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.xu_bei_dao_ji_shi
+              state: "active"
+          sequence:
+            - service: timer.pause
+              target:
+                entity_id: timer.xu_bei_dao_ji_shi
+
+# ── 倒计时可暂停：电视开机 → 从剩余时间继续（不重置） ──
+- id: tv_timer_resume_when_on
+  alias: "[电视] 开机继续观看倒计时"
+  description: 电视开机 → 把暂停中的倒计时接着跑（从剩余时间继续，不重置）。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      to: "on"
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+              state: "paused"
+          sequence:
+            - service: timer.start
+              target:
+                entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.xu_bei_dao_ji_shi
+              state: "paused"
+          sequence:
+            - service: timer.start
+              target:
+                entity_id: timer.xu_bei_dao_ji_shi
 
 # ============================================================
 # 进阶篇：每日配额 / 分时段模式 / 续杯 / 周报（2026-09-28 新增）

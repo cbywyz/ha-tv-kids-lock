@@ -1,12 +1,12 @@
-# 电视「家长管控」教程：音量上限锁 + 信号源锁 + 儿童观看定时锁 + 每日配额 / 分时段模式（Home Assistant）
+# 电视「家长管控」教程：音量上限锁 + 信号源锁 + 儿童观看定时锁 + 每日配额 / 分时段模式 / 倒计时暂停（Home Assistant）
 
 > 不改电视系统、不装电视端 App，管控放在电视**外面**——孩子拿遥控器无解。
 >
 > 方案与品牌无关：小米、索尼、TCL、Apple TV、各类电视盒子……只要电视能接入 Home Assistant，这套教程就能直接套用。**本文以小米电视为例**，其他品牌只是接入方式不同（见「三、准备工作」对照表），自动化部分完全通用。
 >
-> **本仓库四个文件**：`README.md`（教程正文）｜`tv_lock_automations.yaml`（19 条自动化合集，可直接粘贴）｜`helpers-example.yaml`（辅助元素定义）｜`scripts-example.yaml`（5 个家长一键情景脚本）。
+> **本仓库四个文件**：`README.md`（教程正文）｜`tv_lock_automations.yaml`（21 条自动化合集，可直接粘贴）｜`helpers-example.yaml`（辅助元素定义）｜`scripts-example.yaml`（5 个家长一键情景脚本）。
 >
-> 基础篇（音量锁 / 信号源锁 / 单次定时锁）看第五～七章；进阶篇（每日配额 / 分时段模式 / 续杯 / 周报）看第八～十章。**只想快速上手的话，只做基础篇就够了。**
+> 基础篇（音量锁 / 信号源锁 / 单次定时锁 / 倒计时暂停）看第五～七章；进阶篇（每日配额 / 分时段模式 / 续杯 / 周报）看第八～十章。**只想快速上手的话，只做基础篇就够了。**
 
 ## 相关仓库（同一系列教程）
 
@@ -281,6 +281,8 @@ timer:
 
 玩法：给孩子填「儿童观看时长」= 30 → 30 分钟后自动上锁；「自动解除锁定时长」填 30 → 再过 30 分钟自动解锁（填 0 = 一直锁着，家长手动解）。**手动开的锁定永不被自动解除**。
 
+> 补充：配合 7.4 的暂停机制后，这个倒计时统计的是"真正看电视的时间"——中途关机的时间不算在内。
+
 ### 7.1 启动倒计时 / 取消
 
 ```yaml
@@ -390,6 +392,91 @@ timer:
       target:
         entity_id: timer.pin_dao_suo_ding_jie_chu
 ```
+
+### 7.4 倒计时可暂停：关机暂停、开机继续
+
+HA 的 `timer` 是真·墙钟，启动那一刻就开始走，**不管电视是不是还开着**。孩子下去吃个饭、或者嫌吵顺手关了电视出去玩，倒计时照样走完——到点照样上锁，"看 30 分钟"实际只看了 10 分钟，孩子觉得亏，家长还得手动解锁，来回折腾。
+
+HA 的 `timer` 自带 `pause` / `start`（不带 `duration` 时从剩余时间继续），所以只要盯住电视开关状态就能补上这块：
+
+```yaml
+# 只暂停「观看」类倒计时（单次观看倒计时 + 续杯倒计时）；
+# 锁定后的「解除倒计时」是惩罚时间，保持按墙钟走，关机不暂停。
+- id: tv_timer_pause_when_off
+  alias: "[电视] 关机暂停观看倒计时"
+  description: 电视关机满 10 秒 → 暂停进行中的观看倒计时/续杯倒计时，不再空耗时间。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      to: "off"
+      for: "00:00:10"
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+              state: "active"
+          sequence:
+            - service: timer.pause
+              target:
+                entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.xu_bei_dao_ji_shi
+              state: "active"
+          sequence:
+            - service: timer.pause
+              target:
+                entity_id: timer.xu_bei_dao_ji_shi
+
+- id: tv_timer_resume_when_on
+  alias: "[电视] 开机继续观看倒计时"
+  description: 电视开机 → 把暂停中的倒计时接着跑（从剩余时间继续，不重置）。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      to: "on"
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+              state: "paused"
+          sequence:
+            - service: timer.start
+              target:
+                entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: timer.xu_bei_dao_ji_shi
+              state: "paused"
+          sequence:
+            - service: timer.start
+              target:
+                entity_id: timer.xu_bei_dao_ji_shi
+```
+
+三个设计细节：
+
+1. **为什么加 `for: "00:00:10"`**：部分电视（尤其是走云通道的）在换台、投屏切换、短暂休眠时会甩出一个瞬时 `off`，不加延时就会被这种假关机误暂停。10 秒足够过滤掉误判，又不影响真实场景。
+2. **为什么用 `choose` 判状态**：`timer.pause` / `timer.start` 对不在对应状态的 timer 会报错（日志里刷一片红）。先用 `condition: state` 过滤一遍，只对 `active` 的暂停、只对 `paused` 的继续，日志干净。写成两个独立的 `choose` 而不是一个带多条 condition 的，是因为两个 timer 之间不需要"同时成立"的关系，各自独立才符合条件不佳时互不牵连。
+3. **记住 `timer.start` 的两种用法**：带 `duration` = 重新开始；**不带 `duration` = 从暂停处继续**。这是整个暂停机制的支点，别写顺手给它补个 duration 上去，那就变成"开机重置 15 分钟"了。
+
+哪些倒计时该暂停、哪些不该，是这样的：
+
+| 倒计时 | 含义 | 关机是否暂停 |
+|---|---|---|
+| `timer.pin_dao_suo_ding_dao_ji_shi` | 单次观看时长 | ✅ 暂停（统计真看了多久） |
+| `timer.xu_bei_dao_ji_shi` | 续杯的 5 分钟 | ✅ 暂停 |
+| `timer.pin_dao_suo_ding_jie_chu` | 上锁后的惩罚/冷却时间 | ❌ 不暂停（否则关掉电视就能无限坐牢豁免） |
+
+最后一条尤其重要：**惩罚时间必须按墙钟走**。要是允许暂停解除倒计时，孩子关了电视这 30 分钟就永远不流动，等于花一手"关机"就能赖掉惩罚。
+
+> 实测记录：设 5 分钟 → 播到 4:51 时关电视 → 10 秒后timer 状态变 `paused`，剩余停在 4:51 → 干等 8 秒仍然是 4:51（确认暂停有效）→ 再开电视 → 从 4:51 继续往下走。
 
 ## 八、进阶篇：每日观看配额（堵住"看完一轮又一轮"）
 
@@ -543,17 +630,20 @@ cards:
 6. **Jinja 里 `{{ set }}` 是错的，必须 `{% set %}`**：写错的那条自动化会被判为 invalid **并自动 disabled**（状态变 `unavailable`），界面上不报错，只能从 `home-assistant.log` 里翻。改完 YAML 先本地搜一遍有没有 `{{ set`。
 7. **自动化被自动禁用后，改 id 重装会留 residual 实体**：旧的 `automation.xxx` 会一直是 `unavailable`，要重启 HA 才清得掉（或用 WS `config/entity_registry/remove`）。所以改自动化时尽量保持 id 不变。
 8. **`sensor` 域（history_stats、template sensor 里的部分平台）没有 reload 服务**：这是本教程坚持用 `input_number` 做累加器的原因——能热重载的才是家庭里敢动的东西。
+9. **`timer.start` 带不带 `duration` 是两种完全不同的语义**：带 = 重新开始计时；不带 = 从 `paused` 的剩余时间继续。做暂停功能时千万别顺手补上 duration。
+10. **`timer.pause` / `timer.start` 对状态不符的 timer 会报错**：`idle` 的 timer 调 `pause` 会在日志里刷红。动作外面套一层 `condition: state`（暂停只看 `active`、继续只看 `paused`）就干净了。
+11. **区分"该暂停的时间"和"不该暂停的时间"**：观看类倒计时可以随关机暂停，但上锁后的冷却/惩罚时间必须按墙钟走——否则孩子关个电视就能把惩罚无限期冻结。
 
 ## 十三、可以继续扩展的方向
 
 - **断电/断网逃逸防护**：孩子拔插头或关路由器——加一条"电视恢复在线时，若处于管控时段或配额已用尽 → 自动重新上锁"；
-- **倒计时可暂停**：电视关机即暂停计时、开机继续，统计的是"真看了多久"而不是"过了多久"；
+- ~~**倒计时可暂停**：电视关机即暂停计时、开机继续，统计的是"真看了多久"而不是"过了多久"~~（已在 [7.4](#74-倒计时可暂停关机暂停开机继续) 实现）；
 - **观影模式联动**：电视一开 → 灯调暗、空调设 26°、窗帘关上，关机自动恢复；
 - **无人自动关机**：手机离家或房间人体传感器 10 分钟无动静且电视还开着 → 自动关机省电；
 - **解锁要家长批准**：孩子喊解锁 → IM 推一条带「批准/拒绝」按钮的消息，点了才解锁；
 - **锁面板本身**：HA 的面板编辑权限可以按用户控制，孩子登录的账号设为只读即可。
 
-> 其中「每日配额」「分时段模式」「续杯」「周报」本教程已实现，见第八～十章。
+> 其中「倒计时暂停」「每日配额」「分时段模式」「续杯」「周报」本教程均已实现，见 [7.4](#74-倒计时可暂停关机暂停开机继续)、第八～十章。
 
 ## Star 历史
 
