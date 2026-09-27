@@ -211,3 +211,280 @@
     - service: timer.cancel
       target:
         entity_id: timer.pin_dao_suo_ding_jie_chu
+
+
+# ============================================================
+# 进阶篇：每日配额 / 分时段模式 / 续杯 / 周报（2026-09-28 新增）
+# 依赖 helpers-example.yaml 里的进阶辅助元素，详见 README 第八、九章。
+# ============================================================
+
+# ── 每日配额：电视开机每分钟累加今日已看 ──
+- id: tv_watch_minutes_acc
+  alias: "[电视] 今日观看分钟累计"
+  description: 电视处于开机状态时每分钟累加「今日已观看」，供每日配额判断使用。
+  mode: single
+  trigger:
+    - platform: time_pattern
+      minutes: "/1"
+  condition:
+    - condition: state
+      entity_id: media_player.living_room_tv
+      state: "on"
+  action:
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.jin_ri_yi_guan_kan
+      data:
+        value: "{{ (states('input_number.jin_ri_yi_guan_kan') | float(0) + 1) | round(0) }}"
+
+# ── ①-2 配额用尽 → 上锁 + 飞书通知（每天只通知一次）────────────
+
+# ── 每日配额用尽 → 自动上锁 + 飞书通知 ──
+- id: tv_quota_enforce
+  alias: "[电视] 每日配额用尽自动锁定"
+  description: 今日已观看 ≥ 每日配额 → 立即锁定信号源并推飞书；0 点自动重置。今晚自由模式豁免。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_number.jin_ri_yi_guan_kan
+    - platform: state
+      entity_id: input_number.mei_ri_guan_kan_pei_e
+  condition:
+    - condition: template
+      value_template: >-
+        {% set used = states('input_number.jin_ri_yi_guan_kan') | float(0) %}
+        {% set quota = states('input_number.mei_ri_guan_kan_pei_e') | float(0) %}
+        {{ quota > 0 and used >= quota }}
+    - condition: template
+      value_template: "{{ states('input_select.dian_shi_mo_shi') != '今晚自由' }}"
+    - condition: state
+      entity_id: input_boolean.jin_ri_pei_e_yi_yong_jin
+      state: "off"
+  action:
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.jin_ri_pei_e_yi_yong_jin
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.feishu_notify_master
+              state: "on"
+          sequence:
+            - service: cn_im_hub.send_message
+              data:
+                channel: feishu/chat_id
+                target: <你的飞书群ID>
+                message: >-
+                  📺 今日电视配额用尽
+                  已看 {{ states('input_number.jin_ri_yi_guan_kan') | int }} 分钟 / 配额 {{ states('input_number.mei_ri_guan_kan_pei_e') | int }} 分钟
+                  已自动锁定信号源，明天 0 点重置。
+
+# ── ①-3 每日 0:01 重置 ─────────────────────────────────────────
+
+# ── 每日 0:01 清零今日已看，并入本周累计 ──
+- id: tv_daily_reset
+  alias: "[电视] 每日零点重置观看统计"
+  description: 今日分钟并入本周累计 → 今日清零 → 配额用尽标记与续杯次数重置。
+  mode: single
+  trigger:
+    - platform: time
+      at: "00:01:00"
+  action:
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.ben_zhou_lei_ji_guan_kan
+      data:
+        value: "{{ (states('input_number.ben_zhou_lei_ji_guan_kan') | float(0) + states('input_number.jin_ri_yi_guan_kan') | float(0)) | round(0) }}"
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.jin_ri_yi_guan_kan
+      data:
+        value: 0
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.jin_ri_pei_e_yi_yong_jin
+    - service: counter.reset
+      target:
+        entity_id: counter.jin_ri_xu_bei_ci_shu
+
+# ── ①-4 周一 09:00 飞书周报 ────────────────────────────────────
+
+# ── 每周一推送本周观看时长周报 ──
+- id: tv_weekly_report
+  alias: "[电视] 每周一推送观看时长周报"
+  description: 周一早 9 点把本周累计观看分钟数推到飞书，随后清零。
+  mode: single
+  trigger:
+    - platform: time
+      at: "09:00:00"
+  condition:
+    - condition: time
+      weekday:
+        - mon
+    - condition: state
+      entity_id: input_boolean.feishu_notify_master
+      state: "on"
+  action:
+    - service: cn_im_hub.send_message
+      data:
+        channel: feishu/chat_id
+        target: <你的飞书群ID>
+        message: >-
+          📊 电视观看周报
+          本周累计 {{ states('input_number.ben_zhou_lei_ji_guan_kan') | int }} 分钟（日均 {{ (states('input_number.ben_zhou_lei_ji_guan_kan') | float(0) / 7) | round(0) }} 分钟）
+          今日已看 {{ states('input_number.jin_ri_yi_guan_kan') | int }} 分钟
+          统计已清零，新的一周开始。
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.ben_zhou_lei_ji_guan_kan
+      data:
+        value: 0
+
+# ── ②-1 睡眠模式：开机即关 ─────────────────────────────────────
+
+# ── 睡眠模式下开机自动关闭 ──
+- id: tv_sleep_enforce
+  alias: "[电视] 睡眠模式下开机自动关闭"
+  description: 睡眠模式期间电视一旦被打开立即关掉并推飞书（防孩子夜里偷看）。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: media_player.living_room_tv
+      to: "on"
+  condition:
+    - condition: state
+      entity_id: input_select.dian_shi_mo_shi
+      state: "睡眠模式"
+  action:
+    - service: media_player.turn_off
+      target:
+        entity_id: media_player.living_room_tv
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.feishu_notify_master
+              state: "on"
+          sequence:
+            - service: cn_im_hub.send_message
+              data:
+                channel: feishu/chat_id
+                target: <你的飞书群ID>
+                message: "🌙 睡眠模式期间电视被打开，已自动关闭（{{ now().strftime('%H:%M') }}）"
+
+# ── ②-2 每晚 22:30 自动进入睡眠模式 ────────────────────────────
+
+# ── 每晚 22:30 自动进入睡眠模式 ──
+- id: tv_mode_night_auto
+  alias: "[电视] 每晚 22:30 进入睡眠模式"
+  description: 每晚 22:30 切到睡眠模式（今晚自由模式不打扰）。
+  mode: single
+  trigger:
+    - platform: time
+      at: "22:30:00"
+  condition:
+    - condition: template
+      value_template: "{{ states('input_select.dian_shi_mo_shi') != '今晚自由' }}"
+  action:
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.dian_shi_mo_shi
+      data:
+        option: "睡眠模式"
+
+# ── ②-3 早晨 07:00 自动恢复常规 ────────────────────────────────
+
+# ── 早晨 7:00 自动恢复常规模式 ──
+- id: tv_mode_morning_auto
+  alias: "[电视] 早晨七点恢复常规模式"
+  description: 早 7 点把睡眠模式切回常规。
+  mode: single
+  trigger:
+    - platform: time
+      at: "07:00:00"
+  condition:
+    - condition: state
+      entity_id: input_select.dian_shi_mo_shi
+      state: "睡眠模式"
+  action:
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.dian_shi_mo_shi
+      data:
+        option: "常规"
+
+# ── ②-4 作业模式：强制上锁且禁止解锁 ───────────────────────────
+
+# ── 作业模式期间禁止解锁（解开 3 秒内锁回） ──
+- id: tv_homework_mode_relock
+  alias: "[电视] 作业模式期间禁止解锁"
+  description: 切到作业模式立刻上锁；期间锁定一旦被关掉（手动/定时器）立刻重新上锁。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_select.dian_shi_mo_shi
+      to: "作业模式"
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+      to: "off"
+  condition:
+    - condition: state
+      entity_id: input_select.dian_shi_mo_shi
+      state: "作业模式"
+  action:
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - service: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_jie_chu
+    - service: timer.cancel
+      target:
+        entity_id: timer.xu_bei_dao_ji_shi
+
+# ── ②-5 今晚自由模式：解锁并停掉所有定时器 ─────────────────────
+
+# ── 今晚自由模式：自动解锁并停掉所有倒计时 ──
+- id: tv_free_mode_unlock
+  alias: "[电视] 今晚自由模式自动解锁"
+  description: 切到「今晚自由」时立即解除锁定并取消相关倒计时（家长手动放行专用）。
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: input_select.dian_shi_mo_shi
+      to: "今晚自由"
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.jin_ri_pei_e_yi_yong_jin
+    - service: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+    - service: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_jie_chu
+    - service: timer.cancel
+      target:
+        entity_id: timer.xu_bei_dao_ji_shi
+
+# ── ③ 续杯 5 分钟到点重新上锁 ──────────────────────────────────
+
+# ── 续杯时间到 → 重新锁定 ──
+- id: tv_xu_bei_finish
+  alias: "[电视] 续杯时间到重新锁定"
+  description: 「再看5分钟」倒计时结束 → 重新锁定信号源。
+  mode: single
+  trigger:
+    - platform: event
+      event_type: timer.finished
+      event_data:
+        entity_id: timer.xu_bei_dao_ji_shi
+  action:
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.tv_source_lock

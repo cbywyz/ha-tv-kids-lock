@@ -57,3 +57,59 @@ timer:
     name: 频道锁定解除倒计时
     icon: mdi:timer-lock
     restore: true
+
+# ────────── 进阶篇：每日配额 / 模式 / 续杯（2026-09-28 新增）──────────
+# 可以直接追加到上面的同名段落里，或单独建。
+
+input_number:
+  # 每天最多看多少分钟，0 = 不限制
+  mei_ri_guan_kan_pei_e:
+    name: 每日观看配额（分钟）
+    min: 0
+    max: 300
+    step: 5
+    icon: mdi:clock-alert-outline
+  # 系统自动累加，别手动改
+  jin_ri_yi_guan_kan:
+    name: 今日已观看（分钟）
+    min: 0
+    max: 1440
+    step: 1
+    icon: mdi:progress-clock
+  # 本周累计，周一发完周报后清零
+  ben_zhou_lei_ji_guan_kan:
+    name: 本周累计观看（分钟）
+    min: 0
+    max: 10080
+    step: 1
+    icon: mdi:calendar-clock
+
+input_boolean:
+  # 配额用尽标记，防止同一天重复上锁/重复推送
+  jin_ri_pei_e_yi_yong_jin:
+    name: 今日配额已用尽
+    icon: mdi:lock-alert
+
+input_select:
+  dian_shi_mo_shi:
+    name: 电视模式
+    icon: mdi:television-classic
+    options:
+      - 常规
+      - 作业模式
+      - 睡眠模式
+      - 今晚自由
+
+counter:
+  # 每天最多续杯几次，脚本里判断上限
+  jin_ri_xu_bei_ci_shu:
+    name: 今日续杯次数
+    initial: 0
+    step: 1
+    icon: mdi:cup
+
+timer:
+  xu_bei_dao_ji_shi:
+    name: 续杯倒计时
+    icon: mdi:cup-outline
+    restore: true

@@ -1,0 +1,141 @@
+# 电视家长管控 —— 情景脚本（进阶篇）
+# 整段加入 scripts.yaml，然后「开发者工具 → 服务 → script.reload」即可热生效，无需重启。
+# 面板上放几个 button 卡片调用 script.turn_on 就成了家长一键按钮。
+
+tv_mode_30min:
+  alias: '[电视] 情景：看 30 分钟'
+  icon: mdi:timer
+  description: 放行 30 分钟（启动 30 分钟倒计时，到点自动锁）。作业模式/配额用尽时拒绝放行。
+  mode: single
+  sequence:
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: input_select.dian_shi_mo_shi
+        state: 作业模式
+      sequence:
+      - action: cn_im_hub.send_message
+        data:
+          channel: feishu/chat_id
+          target: <你的飞书群ID>
+          message: ⛔ 当前是作业模式，不能放行看电视（先切回常规模式）
+    - conditions:
+      - condition: state
+        entity_id: input_boolean.jin_ri_pei_e_yi_yong_jin
+        state: 'on'
+      sequence:
+      - action: cn_im_hub.send_message
+        data:
+          channel: feishu/chat_id
+          target: <你的飞书群ID>
+          message: ⛔ 今日观看配额已用尽，明天 0 点重置（或切「今晚自由」临时放行）
+    default:
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.dian_shi_mo_shi
+      data:
+        option: 常规
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.er_tong_guan_kan_shi_chang
+      data:
+        value: 30
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - action: timer.cancel
+      target:
+        entity_id: timer.pin_dao_suo_ding_jie_chu
+    - action: timer.cancel
+      target:
+        entity_id: timer.xu_bei_dao_ji_shi
+tv_mode_homework:
+  alias: '[电视] 情景：作业模式'
+  icon: mdi:book-open-variant
+  description: 立即上锁，期间禁止任何解锁（作业写完后手动切回常规）。
+  mode: single
+  sequence:
+  - action: input_select.select_option
+    target:
+      entity_id: input_select.dian_shi_mo_shi
+    data:
+      option: 作业模式
+  - action: timer.cancel
+    target:
+      entity_id: timer.pin_dao_suo_ding_jie_chu
+  - action: timer.cancel
+    target:
+      entity_id: timer.xu_bei_dao_ji_shi
+tv_mode_sleep:
+  alias: '[电视] 情景：睡眠模式'
+  icon: mdi:sleep
+  description: 关掉电视并进入睡眠模式（夜里再被打开会自动关掉）。
+  mode: single
+  sequence:
+  - action: input_select.select_option
+    target:
+      entity_id: input_select.dian_shi_mo_shi
+    data:
+      option: 睡眠模式
+  - action: media_player.turn_off
+    target:
+      entity_id: media_player.living_room_tv
+tv_mode_free:
+  alias: '[电视] 情景：今晚自由'
+  icon: mdi:party-popper
+  description: 今晚豁免全部管控：解锁、停掉所有倒计时、清掉配额用尽标记。
+  mode: single
+  sequence:
+  - action: input_select.select_option
+    target:
+      entity_id: input_select.dian_shi_mo_shi
+    data:
+      option: 今晚自由
+  - action: timer.cancel
+    target:
+      entity_id: timer.pin_dao_suo_ding_dao_ji_shi
+  - action: timer.cancel
+    target:
+      entity_id: timer.pin_dao_suo_ding_jie_chu
+  - action: timer.cancel
+    target:
+      entity_id: timer.xu_bei_dao_ji_shi
+tv_xu_bei:
+  alias: '[电视] 再看 5 分钟（续杯）'
+  icon: mdi:cup
+  description: 解锁 5 分钟后自动重新上锁，每天最多 2 次；作业模式不可用。
+  mode: single
+  sequence:
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: input_select.dian_shi_mo_shi
+        state: 作业模式
+      sequence:
+      - action: cn_im_hub.send_message
+        data:
+          channel: feishu/chat_id
+          target: <你的飞书群ID>
+          message: ⛔ 作业模式下不能续杯
+    - conditions:
+      - condition: template
+        value_template: '{{ states(''counter.jin_ri_xu_bei_ci_shu'') | int(0) >= 2
+          }}'
+      sequence:
+      - action: cn_im_hub.send_message
+        data:
+          channel: feishu/chat_id
+          target: <你的飞书群ID>
+          message: ⛔ 今天的续杯次数已用完（每天最多 2 次）
+    default:
+    - action: counter.increment
+      target:
+        entity_id: counter.jin_ri_xu_bei_ci_shu
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.tv_source_lock
+    - action: timer.start
+      target:
+        entity_id: timer.xu_bei_dao_ji_shi
+      data:
+        duration: 00:05:00
