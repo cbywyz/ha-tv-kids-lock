@@ -620,6 +620,53 @@ cards:
 
 > 面板入口小建议：功能多了以后，单独建一个仪表盘（HA 里「设置 → 仪表盘 → 添加」）挂到侧栏，比塞在某个面板的标签页里好找。
 
+### 11.2 使用说明弹窗（家人不用问你）
+
+功能一多，家里其他人根本不知道每个按钮是干嘛的。在面板上放一条「❓ 使用说明」，点开弹窗看说明——配合 Bubble Card 插件（HACS 安装）实现：
+
+**触发按钮**（放在面板里）：
+
+```yaml
+type: custom:mushroom-template-card
+primary: ❓ 使用说明
+secondary: 点按查看各功能说明
+icon: mdi:help-circle
+icon_color: blue
+tap_action:
+  action: navigate
+  navigation_path: "#help"
+```
+
+**说明弹窗**（同一视图里追加，`card_type` 必须是带连字符的 `pop-up`）：
+
+```yaml
+type: custom:bubble-card
+card_type: pop-up
+hash: "#help"
+name: 电视管控使用说明
+icon: mdi:help-circle
+popup_mode: fit-content
+width_desktop: 520px
+cards:
+  - type: markdown
+    content: >
+      ## 📺 电视管控使用说明
+
+      **看 30 分钟**：立即开 30 分钟观看时间
+
+      **作业模式**：上锁且禁止解锁，写完作业家长手动切回
+
+      **睡眠模式**：开机即关；每晚 22:30 自动进入，07:00 恢复
+
+      **今晚自由**：今晚不限时，明天自动恢复
+
+      **再看 5 分钟**：倒计时结束后的续杯，每天最多 2 次
+
+      **倒计时暂停**：关机超 10 秒自动暂停计时，开机接着看剩余时间
+```
+
+说明内容按你自己实际做的功能写就行，写清楚「每个按钮点了会发生什么」，家里人点开看一眼就懂。
+
 ## 十二、踩坑记录（省你半天排错）
 
 1. **云通道指令偶发丢失/限流**：走云的集成（如小米 Miot）`select_source`、`volume_set` 单发有时不生效。对策：动作里加 `continue_on_error: true`，关键切换 5 秒后补发一次，再加每分钟兜底。局域网直连的集成没有这个问题。
@@ -633,6 +680,7 @@ cards:
 9. **`timer.start` 带不带 `duration` 是两种完全不同的语义**：带 = 重新开始计时；不带 = 从 `paused` 的剩余时间继续。做暂停功能时千万别顺手补上 duration。
 10. **`timer.pause` / `timer.start` 对状态不符的 timer 会报错**：`idle` 的 timer 调 `pause` 会在日志里刷红。动作外面套一层 `condition: state`（暂停只看 `active`、继续只看 `paused`）就干净了。
 11. **区分"该暂停的时间"和"不该暂停的时间"**：观看类倒计时可以随关机暂停，但上锁后的冷却/惩罚时间必须按墙钟走——否则孩子关个电视就能把惩罚无限期冻结。
+12. **Bubble Card 的弹窗 `card_type` 是 `pop-up`（带连字符）**：写成 `popup` 不报错，就是点了没反应，非常隐蔽。另外触发弹窗别用 bubble 自带的 button 卡（部分版本点了没反应），用普通卡片 `tap_action: navigate` 到 `#hash` 最稳（见 11.2）。
 
 ## 十三、可以继续扩展的方向
 
