@@ -14,6 +14,7 @@
 - [ha-hualing-fan-broadlink](https://github.com/cbywyz/ha-hualing-fan-broadlink) —— 华凌风扇红外遥控接入 HA（Broadlink + 8 键编码库）
 - [gree-yapqf-broadlink-smartir](https://github.com/cbywyz/gree-yapqf-broadlink-smartir) —— 格力空调 Broadlink+SmartIR 接入 HA
 - [phicomm-aircat-m1](https://github.com/cbywyz/phicomm-aircat-m1) —— 斐讯悟空 M1 空气检测仪复活记（自建集成）
+- [istoreos-caddy-lucky](https://github.com/cbywyz/istoreos-caddy-lucky) —— iStoreOS **公网入口**教程：Caddy 终结 TLS（Let's Encrypt 自动签发/续期）+ LUCKY 反代，标准 443 **免端口**访问家里的服务，出门在外也能打开上面这些 HA。
 
 ---
 
