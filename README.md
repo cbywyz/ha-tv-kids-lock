@@ -16,6 +16,7 @@
 - [phicomm-aircat-m1](https://github.com/cbywyz/phicomm-aircat-m1) —— 斐讯悟空 M1 空气检测仪复活记（自建集成）
 
 ---
+- [cbywyz/jdcloud-nezha-ax3000-rescue](https://github.com/cbywyz/jdcloud-nezha-ax3000-rescue) —— 京东云哪吒 AX3000 (RE-OS-03U) 刷机变砖与救砖完整实录（TTL/U-Boot 救援、固件选型、eMMC 修复）
 
 ## 一、为什么做这个
 
