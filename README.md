@@ -80,6 +80,8 @@ Home Assistant（HA）把电视接入后，电视对 HA 来说就是一个 `medi
    **本文以小米电视为例**：小米电视本身体验一直在线——画质、系统流畅度、内容生态都很能打，走 Xiaomi Miot 接入 HA 也省心，接入后得到 `media_player.xxx` 实体，音量、信号源、播放状态都能读写。
 3. （可选，小米电视体验更好）**Android TV / ADB 辅助通道**：小米电视本质是 Android TV，加接 Android TV 集成后音量控制可以双通道下发，云指令偶发丢失时有兜底。本教程主链路只依赖主集成，可选通道不做硬性要求。
 
+   > 想更进一步折腾电视**本体**（去广告 / 换极简桌面 / 修信号源键），见[附录 A](#附录-a小米电视系统级折腾实录去广告--换极简桌面--修信号源键)——全部走 ADB、可逆，与踩坑 16/17/18/19 互为印证。
+
 > 下文所有 YAML 里的 `media_player.living_room_tv` 请替换成你自己的电视实体 ID（开发者工具 → 状态里查）；示例中的信号源列表、音量范围同理按你电视的实际属性调整。
 
 ## 四、第一步：创建辅助元素（Helpers）
@@ -688,6 +690,8 @@ cards:
 15. **⛔ 红线：别对小米云实体做 `time_pattern` 高频 `select_source`（会打爆电视）**：为补第 13 条 App 盲区的漏，我曾加"每分钟无条件切回 HDMI 1"。结果：每分钟一条云端指令把小米电视（经 xiaomi_home 云端通道）打爆 → **遥控器失灵、电视卡死**。实测当时手动 `select_source(HDMI 2)` 下发返回 200，电视毫无反应，HA 侧 `source` 110+ 秒不更新 → 云端通道**双向皆断**（状态不上报、命令也不执行），断线时还每分钟狂发指令 = 雪上加霜。**真要强制踢回**：必须前置"电视 `last_updated` < 2 分钟才发"的门禁（失联时不发），且间隔 ≥5 分钟。
 16. **ADB 补 App 盲区的方案，实测后放弃**：主路由常驻 ADB 守护读前台 App，违规就发 webhook 让 HA 切回 / 按 Home 键打断云视听——思路通，但**小米电视一重启「网络调试」就自动关闭**，守护随之失效，没有持久意义，遂撤掉。给后来者的建议：想用 ADB 先确认你家电视重启后 `adb` 是否还活着（多数国产电视默认就关），别像我一样白折腾一晚。
 17. **（定位用）电视真实 IP 可能在旁路由 / 二级网段，别认错设备**：我家电电视真实 IP 是 `192.168.8.103`（在旁路由下的二级网段），而 `192.168.3.191` 是**另一台**小米设备。做 ADB 调试或写 IP 白名单前，先用 `adb connect <真IP>:5555` 确认连的是电视本身，别把指令发到别人设备上（同理，HA 里同名实体也要核对 `entity_id`，别张冠李戴）。
+18. **⛔ 红线：禁用旧桌面（`com.mitv.tvhome`）会连带弄丢遥控「信号源 / Input」键**：mulan 固件的 Input 键（`KEYCODE_TV_INPUT=178`）是**前台应用**接管的，旧桌面是唯一接管方；而 Google TV 那套 `com.android.tv.action.VIEW_INPUTS` 在这固件上**没有接收方**，真正的信号源面板藏在 `com.droidlogic.tvinput/.shortcut.ShortCutActivity`（Amlogic 输入框架）里。给电视做任何「系统级优化」（去广告 / 换桌面）前，**先确认旧桌面状态**——本次实测：禁用它 → 信号源键失灵；恢复启用 → 立即复原。要换桌面就得自己补这个键（做法见[附录 A.5](#a5-信号源键修复本次核心)）。
+19. **小米电视（mulan）走的是有线网卡，`dumpsys wifi` 显示 DISCONNECTED 是正常现象**：这台机器根本没有 `wlan0`，网络走 `eth0`。排障时看到「Wi-Fi 已断开」别顺着查网络——`ip addr` 一眼就能确认。同理 ADB 偶发超时也未必是故障，ping 通 + 5555 重连即可，多为瞬时抖动。
 
 ## 十三、可以继续扩展的方向
 
@@ -699,6 +703,78 @@ cards:
 - **锁面板本身**：HA 的面板编辑权限可以按用户控制，孩子登录的账号设为只读即可。
 
 > 其中「倒计时暂停」「每日配额」「分时段模式」「续杯」「周报」本教程均已实现，见 [7.4](#74-倒计时可暂停关机暂停开机继续)、第八～十章。
+
+## 附录 A：小米电视系统级折腾实录（去广告 / 换极简桌面 / 修信号源键）
+
+> 本章是**电视本体**的优化记录（不是 HA 侧），与踩坑 16 / 17 / 18 / 19 互为印证。所有操作走 ADB，全部可逆。
+
+### A.1 设备与结论速览
+
+| 项 | 值 |
+|---|---|
+| 电视 | 小米电视 MiTV-ASTP0（mulan 固件，Amlogic 平台） |
+| 网络 | **有线** `eth0`，IP `192.168.8.103/24`（旁路由 `192.168.192.11` 下的二级网段；主路由有该网段路由，局域网内可直连，不需要 zerotier） |
+| 工具 | [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)（MIT，纯 Python ADB 客户端，免装 adb） |
+| 去广告 | 26 个包 `pm disable-user` 禁用（可逆，非卸载） |
+| 桌面 | 装了极简桌面 `com.gathin.tvhome`，**默认 Home 仍保持旧桌面**（按 Home 一切如常） |
+| 信号源键 | 已修（见 A.5），新桌面内按 Input 键可正常弹面板 |
+
+### A.2 ADB 连接（mulan 固件特性，重要）
+
+1. 电视：设置里打开「USB 调试」→ `adb connect 192.168.8.103:5555`；
+2. **重启电视后网络 ADB 自动关闭**（踩坑 16 再次证实），需要重新在电视上打开；
+3. 不想装 adb：用 cleanyourtv 的 `tools/tv.py`（纯 Python 实现 ADB 协议）；
+4. **文件传输的坑**：这台电视 `adb pull` 报 `open failed`、往 `/sdcard` 写进去是 0 字节 → 实用解法是 `cat` + base64 分块读回。注意每个 64KB 块 base64 后自带 `==` 补位，**必须按行独立解码再拼字节**，直接拼字符串解码会错位。
+
+### A.3 去广告（`pm disable-user`）
+
+- **保留**：小爱语音助手、投屏（miplay / airkan / wfdsink / mi_connect）、米家、小米视频、桌面、屏保、锁屏、输入法等；
+- **禁用**：统计 / analytics、商城 / 支付、tvpush 推送、天气、日历、卡拉OK、小米音乐、相册、云控、升级、短信推送等共 26 个；
+- 脚本自带 **Home 归属保护**（候选名单里即使出现 `com.mitv.tvhome` 也不会真禁）；
+- 随时可还原：`tools/restore.sh` + 定制清单，恢复记录在 `~/.cleanyourtv/recovery-<IP>-<id>.json`；
+- ⚠️ 最大代价见踩坑 18：**别手动禁旧桌面**。
+
+### A.4 换极简桌面（可选，附云端构建）
+
+- 上游 launcher（`com.gathin.tvhome`）不提供预编译 APK，但仓库自带完整 gradle 工程 → **GitHub Actions 云端构建**（本机没有 JDK / Android SDK 时最省事）：建私库推 workflow，约 2 分钟出包；
+- 新版 runner 的坑：`sdkmanager` 不在 PATH，`android-actions/setup-android@v3` 自身有 bug 会挂 → 直接用 runner 自带 `/usr/local/lib/android/sdk`；
+- **CI 每次构建会生成新的 debug 密钥** → 覆盖安装必被拒（签名不匹配），必须先 `pm uninstall` 再装；
+- 设默认 Home 的真相：`pm set-home-activity` 在这固件**写了但不生效**（旧桌面带 `HOME_STATE` 自定义权限压场，`am start` HOME 意图解析仍走旧桌面；`resolve-activity` 在这固件上也不读首选登记，别被它误导）；
+- 最终采用的行为（零风险，推荐）：**按 Home → 旧桌面**；新桌面从应用列表打开，进去后按 Home 随时回去。
+
+### A.5 信号源键修复（本次核心）
+
+**根因**：Input 键（`KEYCODE_TV_INPUT=178`）归**前台应用**管。旧桌面被禁或不在前台 → 按键无人处理 → 失灵。
+
+**无效方案（省你时间）**：无障碍服务按键过滤（`flagRequestFilterKeyEvents` + `canRequestFilterKeyEvents`）——服务绑定成功、能力位齐全，但这固件**就是不过滤**，按键直接透传给窗口。
+
+**有效方案**（Activity 级拦截，旧桌面同款思路），在 `MainActivity.dispatchKeyEvent` 顶部：
+
+```java
+if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()
+        && event.getKeyCode() == KeyEvent.KEYCODE_TV_INPUT) {
+    if (openSourcePicker()) return true;
+}
+```
+
+`openSourcePicker()` 先试 Google TV 的隐式 `com.android.tv.action.VIEW_INPUTS`（无接收方会抛 `ActivityNotFoundException`），再回退显式组件：
+
+```java
+startActivity(new Intent()
+        .setComponent(new ComponentName("com.droidlogic.tvinput",
+                "com.droidlogic.tvinput.shortcut.ShortCutActivity"))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+```
+
+**验证方法**（不用盯屏幕）：
+
+```bash
+input keyevent 178          # KEYCODE_TV_INPUT
+dumpsys window windows | grep mCurrentFocus
+# 期望：mCurrentFocus=Window{... com.droidlogic.tvinput/...ShortCutActivity}
+```
+
+> `ShortCutActivity` 是半透明弹出面板（`TRANSIT_TRANSLUCENT_ACTIVITY_OPEN`，视频叠加层渲染），**screencap 截不到它**——判断它是否弹出只能看 `dumpsys window` 的窗口焦点。
 
 ## Star 历史
 
