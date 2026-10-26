@@ -794,6 +794,13 @@ dumpsys window windows | grep mCurrentFocus
 1. **冷开机先闪一下小米原桌面，随后 Aerial 自动接管**：系统默认 Home 仍是 `com.mitv.tvhome`（`resolve-activity --home` 解析即它，`cmd role` 在这固件没有），所以开机瞬间看到的是原桌面；但 Aerial 的无障碍守护 `HomeGuardService` 开机自启后，会**自动把 Aerial 拉到前台**（无需按 Home），实际效果是「开机约 1~2 秒后自动进入 Aerial」，只是开头有一帧小米桌面的闪现。想要「冷开机零闪现、直接 Aerial」在本固件做不到（默认 Home 改不了）。
 2. **模拟 `input keyevent HOME` 验收不可信**：mulan 上这条命令会直接落到系统默认 Home（原桌面），绕过了无障碍对 Home 键的接管，所以 dumpsys 看到的是 `com.mitv.tvhome` 而非 Aerial——**这是假阴性，必须用实体遥控器按 Home 验收**（用户 2026-10-26 实测「按 Home 回 Aerial」通过）。
 
+**补充（2026-10-26 晚）：gathin v3.0.0 试装回归（与 Aerial 共存）**
+- cleanyourtv 上游发了 **v3.0.0**（2026-10-25）：20 个官方插件（含广告拦截/信号源）、Launcher 3.0、适配 300 型号。官方 release 依旧**不含 APK**，需自行构建；
+- 在构建库 `cleanyourtv-tvhome` 开 `v3-build` 分支：上游 v3.0.0 tag + 我们的 CI workflow（源码已挪到 `launcher/` 子目录，workflow 加 `defaults.run.working-directory: launcher`）+ 保留 **TV_INPUT Activity 级拦截补丁**（v3.0.0 的输入键走 InputKeyService 无障碍过滤，mulan 仍不支持，补丁仍有必要；新代码里 `ACTION_VIEW_INPUTS` 常量已存在，直接复用）；
+- **CI 踩坑**：GitHub 账号级 **artifact 存储配额已满**（upload-artifact 报 `Artifact storage quota has been hit`，删光本仓库旧 artifact 也不够）→ 改用 **Release 资产**发布（`gh release create` 不认 `--clobber`，`gh release upload` 才认；Release 资产不占 Actions 配额）；
+- 装回电视：`versionName=3.0 / versionCode=9`，仅注册 LEANBACK_LAUNCHER，**系统默认 Home 仍是小米原桌面、Aerial 守护未受影响**——gathin v3.0 作为普通应用从 Aerial 应用列表打开，两桌面共存对比；
+- 信号源键补丁是否还需要实测（v3.0.0 声称多型号 Input 键已修复，但 mulan 未必在列）。
+
 **重启验证（2026-10-26 实测）**：
 - 卸载 gathin 后 `adb reboot`；
 - 约 10s 后 ADB 自动恢复（`persist.adb.tcp.port=5555` 固化生效）；
