@@ -716,13 +716,13 @@ cards:
 | 网络 | **有线** `eth0`，IP `192.168.8.103/24`（旁路由 `192.168.192.11` 下的二级网段；主路由有该网段路由，局域网内可直连，不需要 zerotier） |
 | 工具 | [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)（MIT，纯 Python ADB 客户端，免装 adb） |
 | 去广告 | 26 个包 `pm disable-user` 禁用（可逆，非卸载） |
-| 桌面 | 装了极简桌面 `com.gathin.tvhome`，**默认 Home 仍保持旧桌面**（按 Home 一切如常） |
-| 信号源键 | 已修（见 A.5），新桌面内按 Input 键可正常弹面板 |
+| 桌面 | **最终用 [Aerial](https://github.com/pengchujin/aerial-tv)（`app.orchard.tv`）**：靠无障碍守护 `HomeGuardService` 接管 Home 键（实体遥控按 Home → Aerial）；系统默认 Home 仍是旧桌面（冷开机显示小米原桌面）。早期试装的极简桌面 `com.gathin.tvhome` 已卸载（见 A.6） |
+| 信号源键 | 仅 gathin 方案需要自修（见 A.5）；Aerial 方案不涉及此问题 |
 
 ### A.2 ADB 连接（mulan 固件特性，重要）
 
 1. 电视：设置里打开「USB 调试」→ `adb connect 192.168.8.103:5555`；
-2. **重启电视后网络 ADB 自动关闭**（踩坑 16 再次证实），需要重新在电视上打开；
+2. **重启后网络 ADB 实测会自起**：`persist.adb.tcp.port=5555` 已固化（重启后仍在，2026-10-26 重启验证 ~10s 恢复连接）；若某次连不上再手动开「USB/网络调试」。旧笔记「重启必关 ADB」是基于未固化 persist 属性的情况，已不再成立。
 3. 不想装 adb：用 cleanyourtv 的 `tools/tv.py`（纯 Python 实现 ADB 协议）；
 4. **文件传输的坑**：这台电视 `adb pull` 报 `open failed`、往 `/sdcard` 写进去是 0 字节 → 实用解法是 `cat` + base64 分块读回。注意每个 64KB 块 base64 后自带 `==` 补位，**必须按行独立解码再拼字节**，直接拼字符串解码会错位。
 
@@ -741,6 +741,8 @@ cards:
 - **CI 每次构建会生成新的 debug 密钥** → 覆盖安装必被拒（签名不匹配），必须先 `pm uninstall` 再装；
 - 设默认 Home 的真相：`pm set-home-activity` 在这固件**写了但不生效**（旧桌面带 `HOME_STATE` 自定义权限压场，`am start` HOME 意图解析仍走旧桌面；`resolve-activity` 在这固件上也不读首选登记，别被它误导）；
 - 最终采用的行为（零风险，推荐）：**按 Home → 旧桌面**；新桌面从应用列表打开，进去后按 Home 随时回去。
+
+> ⚠️ **gathin 已被 Aerial 取代并卸载**（2026-10-26）：gathin 作为默认桌面在 mulan 上不生效（`set-home-activity` 写了不生效），且信号源键得自己打补丁；最终改投 **Aerial**（体验更完整、Home 接管更稳），详见 [A.6](#a6-最终桌面aerial取代-gathin)。
 
 ### A.5 信号源键修复（本次核心）
 
@@ -775,6 +777,27 @@ dumpsys window windows | grep mCurrentFocus
 ```
 
 > `ShortCutActivity` 是半透明弹出面板（`TRANSIT_TRANSLUCENT_ACTIVITY_OPEN`，视频叠加层渲染），**screencap 截不到它**——判断它是否弹出只能看 `dumpsys window` 的窗口焦点。
+
+### A.6 最终桌面：Aerial（取代 gathin）
+
+> 2026-10-26 收尾：`com.gathin.tvhome` 已 `pm uninstall` 卸载，Aerial 成为唯一第三方桌面。
+
+**为什么换**：gathin 在 mulan 上 `set-home-activity` 写了不生效（默认 Home 仍是旧桌面），且信号源键得自己打补丁；Aerial（`app.orchard.tv`）体验更完整（tvOS 风格、自带屏保 Dream、Home 接管更稳）。
+
+**Aerial 怎么「当」Home（与 gathin 思路不同）**：
+- Aerial 注册无障碍服务 `app.orchard.tv/app.orchard.tv.guard.HomeGuardService`，**接管 Home 键**——实体遥控按 Home → 系统把 Home 意图交给 Aerial，而不是旧桌面；
+- 该无障碍服务在系统里**开机自启**（重启后 `settings get secure enabled_accessibility_services` 仍含它，进程自动拉起），所以「按 Home → Aerial」在重启后照样成立；
+- 同时 Aerial 发 `keep_adb` 广播保持网络 ADB 常开。
+
+**两个必须知道的边界（mulan 固件特性）**：
+1. **冷开机默认 Home 仍是小米原桌面**（`com.mitv.tvhome`）。`resolve-activity --home` 解析结果就是它，`cmd role` 在这固件没有。也就是说「开机零操作」看到的是原桌面，**按一下实体 Home 才进 Aerial**。想要「冷开机零操作直接 Aerial」在本固件做不到（`set-home-activity` / role 持有都不生效）。
+2. **模拟 `input keyevent HOME` 验收不可信**：mulan 上这条命令会直接落到系统默认 Home（原桌面），绕过了无障碍对 Home 键的接管，所以 dumpsys 看到的是 `com.mitv.tvhome` 而非 Aerial——**这是假阴性，必须用实体遥控器按 Home 验收**（用户 2026-10-26 实测「按 Home 回 Aerial」通过）。
+
+**重启验证（2026-10-26 实测）**：
+- 卸载 gathin 后 `adb reboot`；
+- 约 10s 后 ADB 自动恢复（`persist.adb.tcp.port=5555` 固化生效）；
+- 重启后：`com.gathin.tvhome` 消失、`app.orchard.tv` 仍在、`HomeGuardService` 无障碍仍启用、Aerial 进程自动拉起；
+- 实体 Home → Aerial 行为不变（无障碍守护开机自启）。
 
 ## Star 历史
 
