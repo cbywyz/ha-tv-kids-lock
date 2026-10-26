@@ -728,7 +728,8 @@ cards:
 
 ### A.3 去广告（`pm disable-user`）
 
-- **保留**：小爱语音助手、投屏（miplay / airkan / wfdsink / mi_connect）、米家、小米视频、桌面、屏保、锁屏、输入法等；
+- **保留**：小爱语音助手、投屏（miplay / airkan / wfdsink / mi_connect）、米家、桌面、屏保、锁屏、输入法、`com.mitv.videoplayer`（本地/USB 播放引擎）、`com.mitv.tvplayer`（直播/信号源）等；
+- **小米视频（`com.mitv.mivideoplayer`）已改为禁用**（2026-10-26）：用户不再使用（收费贵 + 应用内贴片广告），它是唯一残留广告源；禁用不影响投屏与本地 USB 播放（走 `com.mitv.videoplayer`）。如需恢复：`pm enable com.mitv.mivideoplayer`。
 - **禁用**：统计 / analytics、商城 / 支付、tvpush 推送、天气、日历、卡拉OK、小米音乐、相册、云控、升级、短信推送等共 26 个；
 - 脚本自带 **Home 归属保护**（候选名单里即使出现 `com.mitv.tvhome` 也不会真禁）；
 - 随时可还原：`tools/restore.sh` + 定制清单，恢复记录在 `~/.cleanyourtv/recovery-<IP>-<id>.json`；
