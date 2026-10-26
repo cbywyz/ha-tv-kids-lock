@@ -796,10 +796,19 @@ dumpsys window windows | grep mCurrentFocus
 
 **补充（2026-10-26 晚）：gathin v3.0.0 试装回归（与 Aerial 共存）**
 - cleanyourtv 上游发了 **v3.0.0**（2026-10-25）：20 个官方插件（含广告拦截/信号源）、Launcher 3.0、适配 300 型号。官方 release 依旧**不含 APK**，需自行构建；
-- 在构建库 `cleanyourtv-tvhome` 开 `v3-build` 分支：上游 v3.0.0 tag + 我们的 CI workflow（源码已挪到 `launcher/` 子目录，workflow 加 `defaults.run.working-directory: launcher`）+ 保留 **TV_INPUT Activity 级拦截补丁**（v3.0.0 的输入键走 InputKeyService 无障碍过滤，mulan 仍不支持，补丁仍有必要；新代码里 `ACTION_VIEW_INPUTS` 常量已存在，直接复用）；
-- **CI 踩坑**：GitHub 账号级 **artifact 存储配额已满**（upload-artifact 报 `Artifact storage quota has been hit`，删光本仓库旧 artifact 也不够）→ 改用 **Release 资产**发布（`gh release create` 不认 `--clobber`，`gh release upload` 才认；Release 资产不占 Actions 配额）；
-- 装回电视：`versionName=3.0 / versionCode=9`，仅注册 LEANBACK_LAUNCHER，**系统默认 Home 仍是小米原桌面、Aerial 守护未受影响**——gathin v3.0 作为普通应用从 Aerial 应用列表打开，两桌面共存对比；
-- 信号源键补丁是否还需要实测（v3.0.0 声称多型号 Input 键已修复，但 mulan 未必在列）。
+- 在构建库 `cleanyourtv-tvhome` 开 `v3-build` 分支：上游 v3.0.0 tag + 我们的 CI workflow（源码已挪到 `launcher/` 子目录，workflow 加 `defaults.run.working-directory: launcher`）；
+- **CI 踩坑**：① GitHub 账号级 **artifact 存储配额已满**（upload-artifact 报 `Artifact storage quota has been hit`，删光本仓库旧 artifact 也不够）→ 改用 **Release 资产**发布（`gh release create` 不认 `--clobber`，`gh release upload` 才认；Release 资产不占 Actions 配额）；② 每次 run 都是全新 runner，**debug 签名密钥每次重生成 → 覆盖安装报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`**，需先 `pm uninstall` 再装；
+- 装回电视：`versionName=3.0 / versionCode=9`，仅注册 LEANBACK_LAUNCHER，**系统默认 Home 仍是小米原桌面、Aerial 守护未受影响**——gathin v3.0 作为普通应用从 Aerial 应用列表打开，两桌面共存对比。
+
+**信号源键：v2.7 的老补丁是错的，v3.0.0 要用上游机制（2026-10-26 实测）**
+- 老补丁（v2.7 时代）在 `dispatchKeyEvent` 里抢先 `startActivity(VIEW_INPUTS)`，失败后退到**写死 droidlogic 的 `com.droidlogic.tvinput/.shortcut.ShortCutActivity`**。mulan 上该面板弹出后自身报「**该电视不支持该功能**」——补丁把按键引上了死路，还抢在上游逻辑之前执行；
+- **上游 v3.0.0 早就适配了这台机器**：`examples/xiaomi-mitv-astp0/` 的 README 明写 "inputs switch only with Xiaomi's `EXTSRC_PLAY`"；
+- 正解（已落地并实测通过）：manifest 允许的情况下**仍要在 `dispatchKeyEvent` 拦 TV_INPUT**（InputKeyService 靠无障碍过滤，mulan 不支持，不拦就丢键），但拦到后**调上游自己的 `showInputs()`**，不再跳 droidlogic；`config.xml` 里配
+  - `input_action` = `com.xiaomi.mitv.tvplayer.EXTSRC_PLAY`
+  - `input_sources` = `HW5=23 / HW6=24 / HW7=25 / HW8=- / HW2=2 / HW3=- / HW4=-`
+- 编号来自 `dumpsys tv_input`（HDMI1=HW5）；实测 `EXTSRC_PLAY` + int extra `input=23` → logcat `setCurrentSource 23`、`Hdmi1InputService/HW5`，画面真切；`input=24` 同理切 HDMI2。这组编号与上游 `examples/redmi-mitv-mftp0` **完全一致**（MStar 编号，Amlogic 机器上照样有效）；
+- 菜单/切源后无法用 `am start` 冒烟验证时注意：`ExternalSourceActivity` 是视频层，`screencap` 截出来是 0 字节，只能靠 logcat 判；
+- **XML 注释坑**：`values/config.xml` 注释里写了 `--ei input 23`，连续两个 `-` 在 XML 注释里非法，`mergeReleaseResources` 直接失败（`The string "--" is not permitted within comments`）——文档里引命令行参数时别写进 XML 注释。
 
 **重启验证（2026-10-26 实测）**：
 - 卸载 gathin 后 `adb reboot`；
