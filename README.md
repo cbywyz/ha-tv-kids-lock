@@ -820,6 +820,31 @@ dumpsys window windows | grep mCurrentFocus
 
 **当前去广告总状态（2026-10-26）**：系统层（推送/商城/支付/统计/小米桌面广告位/小米视频）已 28 包禁用全灭；Aerial 接管 Home 看不到原桌面广告；personalDNSfilter 再兜底 DNS 层应用内广告。**全程免 ROOT、全可逆**（`pm enable` 任一项即可恢复）。
 
+### A.8 重启后拦截自动恢复：交给 Home Assistant 看门狗（2026-10-26 终版）
+
+> 痛点：personalDNSfilter 的 **VPN 在电视重启后不会自起**——小米系统级「自启动白名单」会杀它的 `BootUpReceiver`（监听 `BOOT_COMPLETED`），加上 Android 9 后台启动限制、本固件又无 `cmd vpn` 的 always-on 能力。结果：每次重启，拦截静默失效，要人手动进 App 点一下。
+> 试过两条路，最终选 **HA**：
+
+**① 电脑看门狗（否决）**：在 Windows 控制机放脚本每 5 分钟拉起过滤。用户明确「看门狗不能装电脑上」，弃。
+
+**② Home Assistant 看门狗（采用）**：HA 常驻、且本就接管这台电视，最自然。
+
+- **前置：重新加回 Android TV(ADB) 集成**。之前因为「重启 ADB 自动关闭」移除了 ADB 遥控器；现在 `persist.adb.tcp.port=5555` 已固化、ADB 重启自起，顾虑消除，遂在 HA 加回 Android TV 集成（host `192.168.8.103:5555`，device_class `androidtv`）。生成实体：
+  - `media_player.android_tv_192_168_8_103`（friendly=小米电视）—— 看门狗就用它；
+  - `remote.android_tv_192_168_8_103` —— 即当年移除的 ADB 遥控，一并回来。
+  - ⚠️ 首次连接电视会弹「允许 USB 调试吗」，遥控器点「确定」一次性授权（新主机密钥，和电脑 adb 不同）。
+- **HA 这版的坑**：`androidtv.adb_command` 的 `response: true` 参数被拒（HTTP 400），**拿不到命令回显** → 没法在 HA 侧读 `tun0` 状态。改用**单条自包含命令**，在电视端自己判断：
+  ```
+  ip addr show tun0 | grep -q inet && echo TUN0_OK ||
+  (am start -n dnsfilter.android/.DNSProxyActivity && sleep 4 && input keyevent KEYCODE_HOME)
+  ```
+  tun0 在 → 什么都不做（**平时零干扰**，连待机唤醒都不影响）；tun0 不在 → 拉起过滤 App、等 4 秒建 VPN、再 `HOME` 退回 Aerial。
+- **触发**：`time_pattern` 每 5 分钟兜底巡检 + 电视进入 `playing`/`idle`（一开机）立即查一次；`mode: single`。
+- **落地方式**：本机 HA 是 **UI 存储模式**（`/api/config/automation` 返回 404，自动化全在 `.storage`），无法用 API 写。最终 YAML 文件 `tv_filter_watchdog.yaml` 需手动导入：HA → 设置 → 自动化 → 右上角 ⋮ → 导入自动化 → 粘贴保存。**实体 ID 已写死正确值，无需改。**
+- **实测验证**：本机 adb 强制 `am force-stop dnsfilter.android` 使 `tun0` DOWN；再让 HA 跑该命令 → `tun0` 自动回到 `UP`（`inet 10.0.2.15/24`），`doubleclick.net` 重新解析到 `127.0.0.1`。端到端通过。
+
+**一句话**：电视重启后，HA 会在 5 分钟内（或你一开机）自动把广告拦截拉起来，不用再手动管。
+
 ## Star 历史
 
 如果这篇教程帮你省了折腾时间，欢迎点个 Star ⭐ 也欢迎 Issue 交流。
