@@ -790,7 +790,7 @@ dumpsys window windows | grep mCurrentFocus
 - 同时 Aerial 发 `keep_adb` 广播保持网络 ADB 常开。
 
 **两个必须知道的边界（mulan 固件特性）**：
-1. **冷开机默认 Home 仍是小米原桌面**（`com.mitv.tvhome`）。`resolve-activity --home` 解析结果就是它，`cmd role` 在这固件没有。也就是说「开机零操作」看到的是原桌面，**按一下实体 Home 才进 Aerial**。想要「冷开机零操作直接 Aerial」在本固件做不到（`set-home-activity` / role 持有都不生效）。
+1. **冷开机先闪一下小米原桌面，随后 Aerial 自动接管**：系统默认 Home 仍是 `com.mitv.tvhome`（`resolve-activity --home` 解析即它，`cmd role` 在这固件没有），所以开机瞬间看到的是原桌面；但 Aerial 的无障碍守护 `HomeGuardService` 开机自启后，会**自动把 Aerial 拉到前台**（无需按 Home），实际效果是「开机约 1~2 秒后自动进入 Aerial」，只是开头有一帧小米桌面的闪现。想要「冷开机零闪现、直接 Aerial」在本固件做不到（默认 Home 改不了）。
 2. **模拟 `input keyevent HOME` 验收不可信**：mulan 上这条命令会直接落到系统默认 Home（原桌面），绕过了无障碍对 Home 键的接管，所以 dumpsys 看到的是 `com.mitv.tvhome` 而非 Aerial——**这是假阴性，必须用实体遥控器按 Home 验收**（用户 2026-10-26 实测「按 Home 回 Aerial」通过）。
 
 **重启验证（2026-10-26 实测）**：
