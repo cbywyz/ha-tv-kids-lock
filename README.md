@@ -800,6 +800,26 @@ dumpsys window windows | grep mCurrentFocus
 - 重启后：`com.gathin.tvhome` 消失、`app.orchard.tv` 仍在、`HomeGuardService` 无障碍仍启用、Aerial 进程自动拉起；
 - 实体 Home → Aerial 行为不变（无障碍守护开机自启）。
 
+### A.7 收尾：去广告收口 + 免 ROOT 兜底拦截
+
+> 2026-10-26 追加：去广告清单已到「最优」状态，再叠加一个免 ROOT 的 DNS 层拦截器兜底。
+
+**1. 禁用小米自带屏保 `com.mitv.screensaver`**
+- `pm disable-user com.mitv.screensaver`；禁用总数到 **28**。
+- 原因：Aerial 的 `AerialDream` 屏保已接管（`settings get secure screensaver_components = app.orchard.tv/...AerialDream`），小米原屏保无存在意义，且它本就是广告位之一。两者不冲突。
+
+**2. 小米视频 App 也禁了**（见 A.3 同步说明）：`com.mitv.mivideoplayer` 已 `pm disable-user`，掐掉唯一残留的「应用内贴片广告」源（你不用小米视频，收费又贵）。
+
+**3. 装免 ROOT 广告拦截器 [personalDNSfilter](https://github.com/personalDNSfilter/personalDNSfilter)（dnsfilter.android）**
+- 来源：F-Droid 官方签名包 `dnsfilter.android_1506103.apk`（SHA256 `3ddd0db322d1ca5fe950ea29dc1788af6e6581bb5f34694085fb4aa2e77b68ad`，约 626 KiB）。
+- 原理：**本地 VPN 模式**拦截 DNS 请求，把广告/追踪域名解析到回环地址；免 ROOT、开源、过滤全本地（不联网上传），预置 yoyo / adaway / Steven Black 等列表。对电视上残留的「应用内广告」再挡一层。
+- 安装：`adb install -r C:/.../personaldnsfilter.apk` → 成功（`package:dnsfilter.android`）。
+- **首次授权**：启动后系统会弹 `com.android.vpndialogs.ConfirmDialog`（「personalDNSfilter 想要设置 VPN 连接」），**必须用遥控器点「确定」**——这是 Android 安全机制，adb 无法代点。点完即开始拦截。
+- 建议进 App 开「Autostart / 开机自启」，使拦截在重启后自动恢复。
+- 注意：DNS 层只能拦「域名解析型」广告，对把广告域名写死 IP、或走自家 CDN 的应用内广告无效（那种本来就少）；它和已禁的 28 个系统包是**互补**关系，不是重复。
+
+**当前去广告总状态（2026-10-26）**：系统层（推送/商城/支付/统计/小米桌面广告位/小米视频）已 28 包禁用全灭；Aerial 接管 Home 看不到原桌面广告；personalDNSfilter 再兜底 DNS 层应用内广告。**全程免 ROOT、全可逆**（`pm enable` 任一项即可恢复）。
+
 ## Star 历史
 
 如果这篇教程帮你省了折腾时间，欢迎点个 Star ⭐ 也欢迎 Issue 交流。
