@@ -840,7 +840,7 @@ dumpsys window windows | grep mCurrentFocus
   ```
   tun0 在 → 什么都不做（**平时零干扰**，连待机唤醒都不影响）；tun0 不在 → 拉起过滤 App、等 4 秒建 VPN、再 `HOME` 退回 Aerial。
 - **触发**：`time_pattern` 每 5 分钟兜底巡检 + 电视进入 `playing`/`idle`（一开机）立即查一次；`mode: single`。
-- **落地方式**：本机 HA 是 **UI 存储模式**（`/api/config/automation` 返回 404，自动化全在 `.storage`），无法用 API 写。最终 YAML 文件 `tv_filter_watchdog.yaml` 需手动导入：HA → 设置 → 自动化 → 右上角 ⋮ → 导入自动化 → 粘贴保存。**实体 ID 已写死正确值，无需改。**
+- **落地方式（已更正）**：本机 HA 实为 **YAML 模式**——自动化存 `/config/automations.yaml`（bind 到主路由 `/mnt/sata4-4/homeassistant/automations.yaml`，`.storage` 里并无 automations 文件；之前误判成 UI 模式）。经主路由跳板（paramiko + SFTP）把看门狗自动化**直接追加**进 `automations.yaml`（原文件先 `cp` 备份为 `.bak-1026watchdog`）。`homeassistant.reload_automations` 这个定制版返回 400（端点限制），改用 `homeassistant.restart` 优雅重启核心加载新配置。加载后实体 `automation.dian_shi_yan_gao_lan_jie_shou_hu_personaldnsfilter_zi_hui_fu`（中文 alias 自动转拼音 slug）state=**on**，自动化总数 72→73。**全程未手动从 UI 导入，用户给的主路由密码仅用于一次性跳板、未落盘。**
 - **实测验证**：本机 adb 强制 `am force-stop dnsfilter.android` 使 `tun0` DOWN；再让 HA 跑该命令 → `tun0` 自动回到 `UP`（`inet 10.0.2.15/24`），`doubleclick.net` 重新解析到 `127.0.0.1`。端到端通过。
 
 **一句话**：电视重启后，HA 会在 5 分钟内（或你一开机）自动把广告拦截拉起来，不用再手动管。
