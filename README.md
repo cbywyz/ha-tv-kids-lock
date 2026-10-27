@@ -397,7 +397,7 @@ data:
         entity_id: media_player.living_room_tv_adb
       data:
         command: >-
-          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket' %}
+          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket com.cibn.tv' %}
           {% if is_state('input_boolean.tv_source_lock', 'on') %}
           for p in {{ apps }}; do pm list packages -e | grep -qx "package:$p" && pm disable-user --user 0 $p; done; echo APPS-LOCKED
           {% else %}
@@ -414,7 +414,11 @@ data:
 **怎么找该禁哪些包**：`adb shell pm list packages -3 -e`（已启用的第三方 App）先看全量，再按包名判断；
 小米电视实测：`com.xiaodianshi.tv.yst`=B站小电视、`com.ktcp.video`=云视听极光、
 `com.tencent.qqmusictv`=QQ音乐、`com.ixigua.android.tv.wasu`=西瓜视频、
-`com.gitvdemo.video`=电视家、`com.dangbeimarket`=当贝市场。**学习类（如洪恩识字 `com.hongen.app.word.ott.vip`）别一刀切**。
+`com.gitvdemo.video`=电视家、`com.dangbeimarket`=当贝市场、**`com.cibn.tv`=CIBN酷喵影视（优酷）**。
+**学习类（如洪恩识字 `com.hongen.app.word.ott.vip`）别一刀切**。
+
+> 认包名的小技巧：名字看不出品牌的，`dumpsys package <包名> | grep -iE "activity|scheme"` 看内部类名/URL scheme 就知道是谁。例如
+> `com.cibn.tv` 里出现 `com.youku.tv.home.activity.YkottHomeActivity` 和 scheme `cibntv_yingshi` → 就是酷喵。
 
 **实测结论（2026-10-27）**
 

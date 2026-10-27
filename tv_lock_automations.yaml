@@ -624,7 +624,7 @@
         entity_id: media_player.living_room_tv_adb
       data:
         command: >-
-          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket' %}
+          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket com.cibn.tv' %}
           {% if is_state('input_boolean.tv_source_lock', 'on') %}
           for p in {{ apps }}; do pm list packages -e | grep -qx "package:$p" && pm disable-user --user 0 $p; done; echo APPS-LOCKED
           {% else %}
