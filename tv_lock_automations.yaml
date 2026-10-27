@@ -118,8 +118,12 @@
 #
 # 前置：
 #   1. 电视固定 ADB 端口（小米：设置→账号与安全→ADB 调试，或 setprop persist.adb.tcp.port 5555）
-#   2. HA 装 androidtv 集成，实体 remote.<电视>
+#   2. HA 装 androidtv 集成
 #   3. 首次连接要在电视上点「允许调试」，否则日志是 Connection reset by peer
+# ⚠️ 关键坑：androidtv.adb_command 的 entity_id 必须是 androidtv 集成生成的 **media_player**
+#    实体（通常是 media_player.android_tv_<ip>），**不是** remote.* 。
+#    指向 remote.* 时 HA 只在日志里丢一句「Referenced entities ... are missing or not
+#    currently available」，服务调用返回 success 但电视什么都不执行——极难发现。
 # 注意：很多电视的 adbd 只允许一个客户端，电脑 adb 连着时 HA 就连不上（反之亦然）。
 - id: tv_source_lock_adb
   alias: "[电视] 信号源锁定 ADB 增强校验"
@@ -144,7 +148,8 @@
     - service: androidtv.adb_command
       continue_on_error: true
       target:
-        entity_id: remote.living_room_tv
+        # 必须是 androidtv 的 media_player 实体，见文件头「关键坑」
+        entity_id: media_player.living_room_tv_adb
       data:
         command: >-
           T={{ {'HDMI 1': 23, 'HDMI 2': 24}.get(states('input_select.tv_lock_source'), 0) }};

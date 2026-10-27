@@ -317,7 +317,8 @@ timer:
     - service: androidtv.adb_command
       continue_on_error: true
       target:
-        entity_id: remote.living_room_tv
+        # ⚠️ 必须是 androidtv 的 media_player 实体，不能写 remote.*（见下方踩坑 21）
+        entity_id: media_player.living_room_tv_adb
       data:
         command: >-
           T={{ {'HDMI 1': 23, 'HDMI 2': 24}.get(states('input_select.tv_lock_source'), 0) }};
@@ -328,6 +329,25 @@ timer:
           am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY
           -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input $T
 ```
+
+**怎么验证它真的在执行（不用看画面）**
+
+`media_player.android_tv_<ip>` 这个实体带一个 `adb_response` 属性，值就是上一条 adb 命令的
+stdout/stderr。所以可以先发一条"只读诊断"命令，直接从属性里读回电视端算出来的结论：
+
+```yaml
+service: androidtv.adb_command
+target: { entity_id: media_player.living_room_tv_adb }
+data:
+  command: >-
+    T=23; R=$(dumpsys activity activities | grep -m1 mResumedActivity);
+    C=$(settings get global mitv.tvplayer.hdmi.last.source | tr -d '\r');
+    echo "FG=$R C=$C"
+```
+
+属性返回 `FG=...MainActivity C=23` 就说明 HA→电视的命令链是通的，且读到了真实值。
+另一条更硬的验证：让 HA `settings put global x 123`，再用电脑 `adb shell settings get global x`
+读回，能读到就证明不是"假成功"。
 
 **判据（小米电视实测）**
 
@@ -763,6 +783,8 @@ cards:
 18. **⛔ 红线：禁用旧桌面（`com.mitv.tvhome`）会连带弄丢遥控「信号源 / Input」键**：mulan 固件的 Input 键（`KEYCODE_TV_INPUT=178`）是**前台应用**接管的，旧桌面是唯一接管方；而 Google TV 那套 `com.android.tv.action.VIEW_INPUTS` 在这固件上**没有接收方**，真正的信号源面板藏在 `com.droidlogic.tvinput/.shortcut.ShortCutActivity`（Amlogic 输入框架）里。给电视做任何「系统级优化」（去广告 / 换桌面）前，**先确认旧桌面状态**——本次实测：禁用它 → 信号源键失灵；恢复启用 → 立即复原。要换桌面就得自己补这个键（做法见[附录 A.5](#a5-信号源键修复本次核心)）。
 19. **小米电视（mulan）走的是有线网卡，`dumpsys wifi` 显示 DISCONNECTED 是正常现象**：这台机器根本没有 `wlan0`，网络走 `eth0`。排障时看到「Wi-Fi 已断开」别顺着查网络——`ip addr` 一眼就能确认。同理 ADB 偶发超时也未必是故障，ping 通 + 5555 重连即可，多为瞬时抖动。
 20. **云 `source` 属性会停更，这才是「切几次就锁不住」的真正原因（2026-10 定论）**：实测米家云实体 `media_player.xiaomi_cn_...` 的 `last_updated` 停在几个小时前，期间电视切 App、切 HDMI，`source` 一直报旧值。而锁的唯一判据就是这个属性 → 属性不动，自动化永远不触发。表现极具迷惑性：**刚上锁时有效，切两三次之后就怎么切都不管**。修法见 6.3——用 `androidtv` 集成走局域网 ADB，每 30 秒读 `dumpsys activity activities`（前台是不是 `ExternalSourceActivity`）+ `settings get global mitv.tvplayer.hdmi.last.source`（在哪个 HDMI），电视自己判断、自己切回；云通道降为 5 分钟兜底。**别再靠提高云指令频率去救，那只会打爆通道（踩坑 15）。**
+21. **⛔ `androidtv.adb_command` 的 `entity_id` 必须写 `media_player`，写 `remote.*` 会「静默不执行」（2026-10-27 实测）**：androidtv 集成会同时注册 `media_player.android_tv_<ip>`（真正带 ADB 通道的那个）和 `remote.*`。把 `adb_command` 指向 `remote.*` 时：服务调用**返回 success**、自动化 `last_triggered` 照常更新，但电视端什么都没发生——只在 `home-assistant.log` 留一句 `Referenced entities remote.xxx are missing or not currently available`（因为该 remote 实体状态是 `unknown`，服务调用被直接跳过）。排查时极易误判成"电视 ADB 掉线"。**验收方法**：看目标 `media_player` 的 `adb_response` 属性有没有电视返回的文本（见 6.3）。
+22. **一次只能连一个 adb 客户端，电脑连着 HA 就连不上（反之亦然）**：小电视的 adbd 是单会话的。电脑 `adb connect` 上去之后，HA 的 androidtv 立刻刷 `Connection reset by peer`，实体变 `unknown`、所有 ADB 自动化空转。**排障或抓 dumpsys 用完立刻 `adb kill-server`**，别让电脑的 adb 常驻；HA 侧重连一般 10 秒左右自愈，不行就 `homeassistant.reload_config_entry`（androidtv 条目）重载一次。
 
 ## 十三、可以继续扩展的方向
 
@@ -917,17 +939,17 @@ dumpsys window windows | grep mCurrentFocus
 **② Home Assistant 看门狗（采用）**：HA 常驻、且本就接管这台电视，最自然。
 
 - **前置：重新加回 Android TV(ADB) 集成**。之前因为「重启 ADB 自动关闭」移除了 ADB 遥控器；现在 `persist.adb.tcp.port=5555` 已固化、ADB 重启自起，顾虑消除，遂在 HA 加回 Android TV 集成（host `192.168.8.103:5555`，device_class `androidtv`）。生成实体：
-  - `media_player.android_tv_192_168_8_103`（friendly=小米电视）—— 看门狗就用它；
-  - `remote.android_tv_192_168_8_103` —— 即当年移除的 ADB 遥控，一并回来。
+  - `media_player.android_tv_192_168_8_103`（friendly=小米电视）—— **所有 adb 命令都发给它**（看门狗、信号源锁都一样）；
+  - `remote.android_tv_192_168_8_103` —— 当年移除的 ADB 遥控回来了，但它的状态常是 `unknown`，**不能用它发 adb 命令**（会静默不执行，见踩坑 21）。
   - ⚠️ 首次连接电视会弹「允许 USB 调试吗」，遥控器点「确定」一次性授权（新主机密钥，和电脑 adb 不同）。
-- **HA 这版的坑**：`androidtv.adb_command` 的 `response: true` 参数被拒（HTTP 400），**拿不到命令回显** → 没法在 HA 侧读 `tun0` 状态。改用**单条自包含命令**，在电视端自己判断：
+- **命令回显拿法（2026-10-27 更正）**：`androidtv.adb_command` 不接受 `response: true`（HTTP 400），但命令输出会写进目标 `media_player` 的 **`adb_response` 属性**——用它就能在 HA 侧读回电视端结果，不必再写"自包含、自己判断"的黑盒命令。下面这条仍保留为"电视端自决"写法，但排障时优先看 `adb_response`：
   ```
   ip addr show tun0 | grep -q inet && echo TUN0_OK ||
   (am start -n dnsfilter.android/.DNSProxyActivity && sleep 4 && input keyevent KEYCODE_HOME)
   ```
   tun0 在 → 什么都不做（**平时零干扰**，连待机唤醒都不影响）；tun0 不在 → 拉起过滤 App、等 4 秒建 VPN、再 `HOME` 退回 Aerial。
 - **触发**：`time_pattern` 每 5 分钟兜底巡检 + 电视进入 `playing`/`idle`（一开机）立即查一次；`mode: single`。
-- **落地方式（已更正）**：本机 HA 实为 **YAML 模式**——自动化存 `/config/automations.yaml`（bind 到主路由 `/mnt/sata4-4/homeassistant/automations.yaml`，`.storage` 里并无 automations 文件；之前误判成 UI 模式）。经主路由跳板（paramiko + SFTP）把看门狗自动化**直接追加**进 `automations.yaml`（原文件先 `cp` 备份为 `.bak-1026watchdog`）。`homeassistant.reload_automations` 这个定制版返回 400（端点限制），改用 `homeassistant.restart` 优雅重启核心加载新配置。加载后实体 `automation.dian_shi_yan_gao_lan_jie_shou_hu_personaldnsfilter_zi_hui_fu`（中文 alias 自动转拼音 slug）state=**on**，自动化总数 72→73。**全程未手动从 UI 导入，用户给的主路由密码仅用于一次性跳板、未落盘。**
+- **落地方式（已更正）**：本机 HA 实为 **YAML 模式**——自动化存 `/config/automations.yaml`（bind 到主路由 `/mnt/sata4-4/homeassistant/automations.yaml`，`.storage` 里并无 automations 文件；之前误判成 UI 模式）。经主路由跳板（paramiko + SFTP）把看门狗自动化**直接追加**进 `automations.yaml`（原文件先 `cp` 备份）。**热重载用 `automation.reload`**（`homeassistant.reload_automations` 在 2026.x 已不存在，调它会返回 `service_not_found`，别再用它，也不必重启核心）。加载后实体 `automation.dian_shi_yan_gao_lan_jie_shou_hu_personaldnsfilter_zi_hui_fu`（中文 alias 自动转拼音 slug）state=**on**。
 - **实测验证**：本机 adb 强制 `am force-stop dnsfilter.android` 使 `tun0` DOWN；再让 HA 跑该命令 → `tun0` 自动回到 `UP`（`inet 10.0.2.15/24`），`doubleclick.net` 重新解析到 `127.0.0.1`。端到端通过。
 
 **一句话**：电视重启后，HA 会在 5 分钟内（或你一开机）自动把广告拦截拉起来，不用再手动管。
