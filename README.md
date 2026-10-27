@@ -59,7 +59,7 @@ Home Assistant（HA）把电视接入后，电视对 HA 来说就是一个 `medi
 | 管控 | 手段 | 关键点 |
 |------|------|--------|
 | 音量上限 | 监听 `volume_level` 变化，超限立即拉回 | 0.5% 防抖，避免拉回动作自己触发自己 |
-| 信号源 | 锁定开关打开**无条件强切** + 换台拦截 + ADB 30 秒增强校验（云通道只留 5 分钟兜底） | 不信任电视上报的 source 属性（会停更），以 ADB 读到的前台/输入口为准 |
+| 信号源 | 锁定开关打开**无条件强切** + 换台拦截 + ADB 10 秒增强校验（云通道只留 5 分钟兜底） | 不信任电视上报的 source 属性（会停更），以 ADB 读到的前台/输入口为准 |
 | 定时锁 | HA 原生 `timer` 倒计时 → 到点打开锁定开关 | 到点自动解锁，手动锁永不自动解除 |
 
 ## 三、准备工作
@@ -291,25 +291,24 @@ timer:
 
 结果就是：**刚上锁时好用，切两三次之后锁就形同虚设**。这不是自动化写错了，是判据本身失效。
 
-修法：用 `androidtv` 集成（局域网 ADB 直连）每 30 秒读一次电视**本地真实状态**，发现不对就本地切回，完全不经过云：
+修法：用 `androidtv` 集成（局域网 ADB 直连）每 10 秒读一次电视**本地真实状态**，发现不对就本地切回，完全不经过云：
 
 ```yaml
 - id: tv_source_lock_adb
   alias: "[电视] 信号源锁定 ADB 增强校验"
-  description: 锁开且电视开着 → 每 30 秒用 ADB 读真实信号源；被切到别的 HDMI 或切到 App，立刻本地切回。
+  description: 锁开且电视开着 → 每 10 秒用 ADB 读真实信号源；被切到别的 HDMI 或切到 App，立刻本地切回。
   mode: single
   max_exceeded: silent
   trigger:
     - platform: time_pattern
-      seconds: "/30"
+      seconds: "/10"
   condition:
     - condition: state
       entity_id: input_boolean.tv_source_lock
       state: "on"
-    # 云实体的 on/off 通常准（不准的是 source），用它过滤待机，避免 ADB 空转
-    - condition: state
-      entity_id: media_player.living_room_tv
-      state: "on"
+    # ⚠️ 别用云实体判断开关机：云 state 也会停更，关机后照样报 on（踩坑 23）
+    - condition: template
+      value_template: "{{ states('media_player.living_room_tv_adb') in ['playing', 'paused', 'idle', 'on'] }}"
     # 只处理已验证过 input 编号的源
     - condition: template
       value_template: "{{ states('input_select.tv_lock_source') in ['HDMI 1', 'HDMI 2'] }}"
@@ -557,12 +556,12 @@ HA 的 `timer` 自带 `pause` / `start`（不带 `duration` 时从剩余时间�
 # 锁定后的「解除倒计时」是惩罚时间，保持按墙钟走，关机不暂停。
 - id: tv_timer_pause_when_off
   alias: "[电视] 关机暂停观看倒计时"
-  description: 电视关机满 10 秒 → 暂停进行中的观看倒计时/续杯倒计时，不再空耗时间。
+  description: 电视关机满 10 秒 → 暂停进行中的观看倒计时/续杯倒计时，不再空耗时间。判据走 ADB 实体（云实体 state 会停更）。
   mode: single
   trigger:
-    - platform: state
-      entity_id: media_player.living_room_tv
-      to: "off"
+    # ⚠️ 必须用 template trigger：state trigger 的 to: off 抓不到 unavailable（ADB 断开）
+    - platform: template
+      value_template: "{{ states('media_player.living_room_tv_adb') not in ['playing', 'paused', 'idle', 'on'] }}"
       for: "00:00:10"
   action:
     - choose:
@@ -586,12 +585,11 @@ HA 的 `timer` 自带 `pause` / `start`（不带 `duration` 时从剩余时间�
 
 - id: tv_timer_resume_when_on
   alias: "[电视] 开机继续观看倒计时"
-  description: 电视开机 → 把暂停中的倒计时接着跑（从剩余时间继续，不重置）。
+  description: 电视开机 → 把暂停中的倒计时接着跑（从剩余时间继续，不重置）。判据走 ADB 实体。
   mode: single
   trigger:
-    - platform: state
-      entity_id: media_player.living_room_tv
-      to: "on"
+    - platform: template
+      value_template: "{{ states('media_player.living_room_tv_adb') in ['playing', 'paused', 'idle', 'on'] }}"
   action:
     - choose:
         - conditions:
@@ -649,14 +647,14 @@ HA 的 `timer` 自带 `pause` / `start`（不带 `duration` 时从剩余时间�
 |---|---|---|
 | `input_number.mei_ri_guan_kan_pei_e` | 每天最多看多少分钟，**0 = 不限** | 60 |
 | `input_number.jin_ri_yi_guan_kan` | 今日已看（系统自动累加，别手动改） | — |
-| `input_number.ben_zhou_lei_ji_guan_kan` | 本周累计（周报用） | — |
+| `input_number.ben_zhou_lei_ji_guan_kan` | 本周累计（**只含到昨天**，展示时用值 + 今日） | — |
 | `input_boolean.jin_ri_pei_e_yi_yong_jin` | "今天配额已用尽"标记，防重复上锁/重复推送 | — |
 
 ### 8.3 三条自动化
 
-1. **`tv_watch_minutes_acc`**：每分钟触发一次，条件是电视 `state == on`，动作是给"今日已看"+1；
+1. **`tv_watch_minutes_acc`**：每分钟触发一次，条件是 **ADB 实体**在 `['playing','paused','idle','on']`（**别用云实体 `state == on`**：云 state 会停更，关机后照样报 on，一天能虚高两百多分钟，见踩坑 23），动作是给"今日已看"+1；
 2. **`tv_quota_enforce`**：`今日已看 ≥ 配额` 且不在"今晚自由"模式且未标记过 → 打标记 + 上锁 + 推通知；
-3. **`tv_daily_reset`**：每天 0:01 把"今日已看"并入"本周累计"后清零，并清掉标记。
+3. **`tv_daily_reset`**：每天 0:01 把"今日已看"并入"本周累计"后清零，并清掉标记。**注意这意味着 `ben_zhou` 只含到昨天**，面板/周报要展示"本周累计"时得用 `ben_zhou + jin_ri`，否则会出现"今日 385 > 本周 295"的怪现象。
 
 > 完整 YAML 见 `tv_lock_automations.yaml` 的「进阶篇」段落，`tv_quota_enforce` 里的通知部分换成你自己的推送服务即可（示例用的是飞书）。
 
@@ -676,7 +674,7 @@ HA 的 `timer` 自带 `pause` / `start`（不带 `duration` 时从剩余时间�
 实现要点（三条自动化）：
 
 - `tv_homework_mode_relock`：作业模式下一旦检测到锁定开关变成 `off`，3 秒内立刻 `turn_on` 拉回来；
-- `tv_sleep_enforce`：睡眠模式下电视变 `on` → 立刻 `media_player.turn_off`；
+- `tv_sleep_enforce`：睡眠模式下电视变**开机**（ADB 实体进白名单）→ 立刻 `media_player.turn_off`；
 - `tv_mode_night_auto` / `tv_mode_morning_auto`：按时间改 `input_select`。
 
 > ⚠️ 别忘了把第七章的"到点自动解锁"（`tv_lock_release_finish`）**加上"当前不是作业模式 / 今日配额未用尽"的条件**，否则作业模式会被定时解锁悄悄破掉。
@@ -842,9 +840,11 @@ cards:
 17. **（定位用）电视真实 IP 可能在旁路由 / 二级网段，别认错设备**：我家电电视真实 IP 是 `192.168.8.103`（在旁路由下的二级网段），而 `192.168.3.191` 是**另一台**小米设备。做 ADB 调试或写 IP 白名单前，先用 `adb connect <真IP>:5555` 确认连的是电视本身，别把指令发到别人设备上（同理，HA 里同名实体也要核对 `entity_id`，别张冠李戴）。
 18. **⛔ 红线：禁用旧桌面（`com.mitv.tvhome`）会连带弄丢遥控「信号源 / Input」键**：mulan 固件的 Input 键（`KEYCODE_TV_INPUT=178`）是**前台应用**接管的，旧桌面是唯一接管方；而 Google TV 那套 `com.android.tv.action.VIEW_INPUTS` 在这固件上**没有接收方**，真正的信号源面板藏在 `com.droidlogic.tvinput/.shortcut.ShortCutActivity`（Amlogic 输入框架）里。给电视做任何「系统级优化」（去广告 / 换桌面）前，**先确认旧桌面状态**——本次实测：禁用它 → 信号源键失灵；恢复启用 → 立即复原。要换桌面就得自己补这个键（做法见[附录 A.5](#a5-信号源键修复本次核心)）。
 19. **小米电视（mulan）走的是有线网卡，`dumpsys wifi` 显示 DISCONNECTED 是正常现象**：这台机器根本没有 `wlan0`，网络走 `eth0`。排障时看到「Wi-Fi 已断开」别顺着查网络——`ip addr` 一眼就能确认。同理 ADB 偶发超时也未必是故障，ping 通 + 5555 重连即可，多为瞬时抖动。
-20. **云 `source` 属性会停更，这才是「切几次就锁不住」的真正原因（2026-10 定论）**：实测米家云实体 `media_player.xiaomi_cn_...` 的 `last_updated` 停在几个小时前，期间电视切 App、切 HDMI，`source` 一直报旧值。而锁的唯一判据就是这个属性 → 属性不动，自动化永远不触发。表现极具迷惑性：**刚上锁时有效，切两三次之后就怎么切都不管**。修法见 6.3——用 `androidtv` 集成走局域网 ADB，每 30 秒读 `dumpsys activity activities`（前台是不是 `ExternalSourceActivity`）+ `settings get global mitv.tvplayer.hdmi.last.source`（在哪个 HDMI），电视自己判断、自己切回；云通道降为 5 分钟兜底。**别再靠提高云指令频率去救，那只会打爆通道（踩坑 15）。**
+20. **云 `source` 属性会停更，这才是「切几次就锁不住」的真正原因（2026-10 定论）**：实测米家云实体 `media_player.xiaomi_cn_...` 的 `last_updated` 停在几个小时前，期间电视切 App、切 HDMI，`source` 一直报旧值。而锁的唯一判据就是这个属性 → 属性不动，自动化永远不触发。表现极具迷惑性：**刚上锁时有效，切两三次之后就怎么切都不管**。修法见 6.3——用 `androidtv` 集成走局域网 ADB，每 10 秒读 `dumpsys activity activities`（前台是不是 `ExternalSourceActivity`）+ `settings get global mitv.tvplayer.hdmi.last.source`（在哪个 HDMI），电视自己判断、自己切回；云通道降为 5 分钟兜底。**别再靠提高云指令频率去救，那只会打爆通道（踩坑 15）。**
 21. **⛔ `androidtv.adb_command` 的 `entity_id` 必须写 `media_player`，写 `remote.*` 会「静默不执行」（2026-10-27 实测）**：androidtv 集成会同时注册 `media_player.android_tv_<ip>`（真正带 ADB 通道的那个）和 `remote.*`。把 `adb_command` 指向 `remote.*` 时：服务调用**返回 success**、自动化 `last_triggered` 照常更新，但电视端什么都没发生——只在 `home-assistant.log` 留一句 `Referenced entities remote.xxx are missing or not currently available`（因为该 remote 实体状态是 `unknown`，服务调用被直接跳过）。排查时极易误判成"电视 ADB 掉线"。**验收方法**：看目标 `media_player` 的 `adb_response` 属性有没有电视返回的文本（见 6.3）。
 22. **一次只能连一个 adb 客户端，电脑连着 HA 就连不上（反之亦然）**：小电视的 adbd 是单会话的。电脑 `adb connect` 上去之后，HA 的 androidtv 立刻刷 `Connection reset by peer`，实体变 `unknown`、所有 ADB 自动化空转。**排障或抓 dumpsys 用完立刻 `adb kill-server`**，别让电脑的 adb 常驻；HA 侧重连一般 10 秒左右自愈，不行就 `homeassistant.reload_config_entry`（androidtv 条目）重载一次。
+23. **云实体的 `state` 也会停更，别拿它判断开关机（2026-10-27 实测，代价是 385 分钟的假数据）**：一直以为云实体只有 `source` 会停更、`on/off` 是准的——**错**。实测电视关机后 `media_player.xiaomi_cn_...` 仍长期停在 `on`（`last_updated` 停在几小时前不动）。后果两个：①「今日观看分钟累计」在电视关机后继续每分钟 +1，一天下来虚高到 385 分钟；②「关机暂停观看倒计时 / 开机继续」永远不触发，锁定倒计时和续杯倒计时关机后照常空跑。修法：**所有开关机判据统一改成 androidtv 实体** `media_player.android_tv_<ip>` 的状态白名单 `['playing','paused','idle','on']`——正常开机是 `playing/paused/idle`（实测待机桌面 = `paused`），关机是 `off/standby`，ADB 断了是 `unavailable`，后三种都落在白名单外。**触发要用 template trigger，`to: 'off'` 抓不到 `unavailable`。**
+    顺带一个显示坑：「本周累计」比「今日已看」还小，不是数据坏了——`ben_zhou` 只累计到昨天，0:01 才把今天并进去。周报文案要算 `ben_zhou + jin_ri`，别只报 `ben_zhou`。
 
 ## 十三、可以继续扩展的方向
 
