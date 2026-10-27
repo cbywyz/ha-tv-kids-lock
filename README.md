@@ -370,6 +370,62 @@ data:
 - ⚠️ 待实测：HA 与电视的 ADB 长连接稳定性。很多电视的 `adbd` **只允许一个客户端**——电脑 `adb` 连着时 HA 连不上（反之亦然），日志表现为 `Connection reset by peer` / `Reading timed out`。排障前先 `adb kill-server` 断开电脑，再看 HA 日志；首次连接还要在电视上点「允许调试」。
 - ⚠️ 待实测：电视待机时 ADB 不可达，自动化会失败（已用云实体 `state == on` 过滤），`continue_on_error: true` 保证不刷错误日志。
 
+### 6.4 补充：锁 App（只锁信号源锁不住内容 App）
+
+> 2026-10-27 实测补的第二个洞。**只锁信号源 = 假锁**，两种情况都会漏：
+> ① 孩子直接从桌面打开云视听/B站，`source` 属性根本不变（踩坑 13）；
+> ② 锁回的那个 HDMI 如果**没有信号源**，电视十几秒后自己弹回桌面 —— 实测 20:35:30 锁回 HDMI 1，
+>    20:35:47 就回到 Aerial 桌面，形成"黑屏 15 秒 → 桌面 15 秒"的循环，孩子在桌面那段时间照样能点开 App。
+
+**做法：锁开就 `pm disable-user` 掉娱乐类 App，锁关 `pm enable` 恢复。** 最土但最有效，全程可逆、
+不碰系统分区、不需要 root：
+
+```yaml
+- id: tv_app_lock_adb
+  alias: "[电视] 锁定期间禁用娱乐 App"
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+    - platform: time_pattern      # 兜底对账，手滑/HA 重启/命令漏执行 2 分钟内自愈
+      minutes: "/2"
+  action:
+    - service: androidtv.adb_command
+      continue_on_error: true
+      target:
+        entity_id: media_player.living_room_tv_adb
+      data:
+        command: >-
+          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket' %}
+          {% if is_state('input_boolean.tv_source_lock', 'on') %}
+          for p in {{ apps }}; do pm list packages -e | grep -qx "package:$p" && pm disable-user --user 0 $p; done; echo APPS-LOCKED
+          {% else %}
+          for p in {{ apps }}; do pm list packages -d | grep -qx "package:$p" && pm enable $p; done; echo APPS-UNLOCKED
+          {% endif %}
+```
+
+**这份禁/启脚本的三个安全点**
+
+1. **先查存在再动手**：`pm list packages -e | grep -qx` 命中才 disable，`-d` 命中才 enable —— 包不存在/已禁用都不会报错，可反复执行（幂等）。
+2. **只动白名单里的包**：脚本里的包名是硬编码白名单，永远不碰桌面、输入法、systemui、管家（禁了电视只能 adb 救）。
+3. **解锁是"恢复"不是"保证启用"**：`pm enable` 只对白名单里的包生效，不会把系统里其它本来就被禁的包一并放开。
+
+**怎么找该禁哪些包**：`adb shell pm list packages -3 -e`（已启用的第三方 App）先看全量，再按包名判断；
+小米电视实测：`com.xiaodianshi.tv.yst`=B站小电视、`com.ktcp.video`=云视听极光、
+`com.tencent.qqmusictv`=QQ音乐、`com.ixigua.android.tv.wasu`=西瓜视频、
+`com.gitvdemo.video`=电视家、`com.dangbeimarket`=当贝市场。**学习类（如洪恩识字 `com.hongen.app.word.ott.vip`）别一刀切**。
+
+**实测结论（2026-10-27）**
+
+| 步骤 | 结果 |
+| --- | --- |
+| 锁开 +14s | 6 个包全部出现在 `pm list packages -d`，后台进程被强停、正在放的 B站 被踢出 |
+| 锁开时 `am start` B站 | 拉不起来（前台始终不是该 App） |
+| 锁关 +14s | 6 个包全部回到 `pm list packages -e` |
+| 锁关后再 `am start` | `FG=com.xiaodianshi.tv.yst/.ui.main.MainActivity`，正常播放 |
+
+
 ## 七、第四步：儿童观看定时锁
 
 玩法：给孩子填「儿童观看时长」= 30 → 30 分钟后自动上锁；「自动解除锁定时长」填 30 → 再过 30 分钟自动解锁（填 0 = 一直锁着，家长手动解）。**手动开的锁定永不被自动解除**。
@@ -775,7 +831,7 @@ cards:
 11. **区分"该暂停的时间"和"不该暂停的时间"**：观看类倒计时可以随关机暂停，但上锁后的冷却/惩罚时间必须按墙钟走——否则孩子关个电视就能把惩罚无限期冻结。
 12. **Bubble Card 的弹窗 `card_type` 是 `pop-up`（带连字符）**：写成 `popup` 不报错，就是点了没反应，非常隐蔽。另外触发弹窗别用 bubble 自带的 button 卡（部分版本点了没反应），用普通卡片 `tap_action: navigate` 到 `#hash` 最稳（见 11.2）。
 
-13. **信号源锁锁不住「电视内 App」（云视听 / 爱奇艺等）——这是机制盲区，先说结论**：锁只认 `media_player` 的 `source` 属性（物理信号源 HDMI / TV）。孩子在电视桌面里打开云视听这类内容 App，**不会切换信号源**，`source` 属性不变 → HA 判定"还在锁定的 HDMI 1"，不触发切回。所以本方案**只能锁物理信号源（机顶盒 / 游戏机所在的 HDMI 口），锁不住电视自带的流媒体 App**。要在 App 层也管住，得另走 ADB / 应用层方案（见下两条），但实测弯路不少。
+13. **信号源锁锁不住「电视内 App」（云视听 / 爱奇艺等）——这是机制盲区，先说结论**：锁只认 `media_player` 的 `source` 属性（物理信号源 HDMI / TV）。孩子在电视桌面里打开云视听这类内容 App，**不会切换信号源**，`source` 属性不变 → HA 判定"还在锁定的 HDMI 1"，不触发切回。所以单靠信号源锁**只能锁物理信号源（机顶盒 / 游戏机所在的 HDMI 口），锁不住电视自带的流媒体 App**。要在 App 层也管住，得另走 ADB / 应用层方案（**2026-10-27 已落地：锁开时 `pm disable-user` 娱乐 App，见 [6.4](#64-补充锁-app只锁信号源锁不住内容-app)**）。
 14. **小米 Miot 云端通道极不稳定，「切回」依赖它，断线锁就暂时失效**：实测一晚断 3 次（其中一次长达 85 分钟零上报）。家里局域网 ping 电视 **0 丢包、0.36ms**，排除了自家网络——断的是小米云。后果：云端断开期间孩子切走信号源，HA 既收不到变化、也下不了切回指令，锁等于暂时失效。**局域网直连的电视（索尼 / TCL / 雷鸟等走 Android TV 集成）没有这问题**，这是"走云"必须接受的代价。要缓解，只能在锁定时加飞书告警（失联即通知家长），而不是硬扛云端。
 15. **⛔ 红线：别对小米云实体做 `time_pattern` 高频 `select_source`（会打爆电视）**：为补第 13 条 App 盲区的漏，我曾加"每分钟无条件切回 HDMI 1"。结果：每分钟一条云端指令把小米电视（经 xiaomi_home 云端通道）打爆 → **遥控器失灵、电视卡死**。实测当时手动 `select_source(HDMI 2)` 下发返回 200，电视毫无反应，HA 侧 `source` 110+ 秒不更新 → 云端通道**双向皆断**（状态不上报、命令也不执行），断线时还每分钟狂发指令 = 雪上加霜。**真要强制踢回**：必须前置"电视 `last_updated` < 2 分钟才发"的门禁（失联时不发），且间隔 ≥5 分钟。
 16. **ADB 补 App 盲区的方案，当年实测后放弃（2026-10 已重新启用）**：主路由常驻 ADB 守护读前台 App，违规就发 webhook 让 HA 切回——思路通，但**当年小米电视一重启「网络调试」就自动关闭**，守护随之失效，遂撤掉。后来把端口写进持久属性（`setprop persist.adb.tcp.port 5555`）并确认系统设置里调试常开，重启后 `5555` 仍在监听，才重新启用。**用前必须确认三件事**：① `getprop persist.adb.tcp.port` 有值；② `settings get global adb_enabled` 为 1；③ 真重启一次，`adb connect` 仍然成功。三者缺一，ADB 守护迟早会在某次重启后静默失效。

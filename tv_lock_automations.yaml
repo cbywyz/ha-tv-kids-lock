@@ -595,3 +595,38 @@
     - service: input_boolean.turn_on
       target:
         entity_id: input_boolean.tv_source_lock
+
+# ── 锁定期间禁用娱乐 App（ADB 层）──────────────────────────────────
+# 为什么需要：只锁信号源是锁不住 App 的（踩坑 13）。孩子打开云视听/B站照样看，
+# 而「锁回 HDMI」在 HDMI 那头没信号时会被系统弹回桌面，等于没锁。
+# 这里的做法最直接：锁开 → pm disable-user 娱乐类 App（图标变灰、点不开、正在放的被强停）；
+# 锁关 → pm enable 恢复。全程可逆，不改系统分区。
+# ⚠️ 绝不能禁：桌面（如 app.orchard.tv / com.mitv.tvhome）、输入法（sogou）、
+#    com.android.systemui、轻桌面/管家 —— 禁了电视没法操作，只能 adb 救。
+# 实测（2026-10-27）：锁开 14 秒内 6 个包全部进 disabled 列表，B站 am start 拉不起来；
+#                    解锁 14 秒内全部回 enabled，App 正常拉起。
+- id: tv_app_lock_adb
+  alias: "[电视] 锁定期间禁用娱乐 App"
+  description: 锁开 → ADB 临时禁用娱乐类 App；锁关 → 恢复。每 2 分钟对账兜底。
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: state
+      entity_id: input_boolean.tv_source_lock
+    # 兜底对账：手滑/HA 重启/命令漏执行都能在 2 分钟内自愈
+    - platform: time_pattern
+      minutes: "/2"
+  action:
+    - service: androidtv.adb_command
+      continue_on_error: true
+      target:
+        # 必须是 androidtv 的 media_player 实体，见踩坑 21
+        entity_id: media_player.living_room_tv_adb
+      data:
+        command: >-
+          {% set apps = 'com.xiaodianshi.tv.yst com.ktcp.video com.tencent.qqmusictv com.ixigua.android.tv.wasu com.gitvdemo.video com.dangbeimarket' %}
+          {% if is_state('input_boolean.tv_source_lock', 'on') %}
+          for p in {{ apps }}; do pm list packages -e | grep -qx "package:$p" && pm disable-user --user 0 $p; done; echo APPS-LOCKED
+          {% else %}
+          for p in {{ apps }}; do pm list packages -d | grep -qx "package:$p" && pm enable $p; done; echo APPS-UNLOCKED
+          {% endif %}
