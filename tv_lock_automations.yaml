@@ -83,7 +83,7 @@
 # ── 信号源：换台拦截 + 每分钟兜底 ───────────────────────────────
 - id: tv_source_lock
   alias: "[电视] 信号源锁定"
-  description: 锁定开启时信号源被切走自动切回；云指令偶发限流，每分钟兜底重发直到切回。
+  description: 锁定开启时信号源被切走自动切回（云通道）；云指令偶发限流，降为每 5 分钟兜底，秒级校验交给 tv_source_lock_adb。
   mode: single
   max_exceeded: silent
   trigger:
@@ -93,7 +93,7 @@
     - platform: state
       entity_id: media_player.living_room_tv
     - platform: time_pattern
-      minutes: "/1"
+      minutes: "/5"
   condition:
     - condition: state
       entity_id: input_boolean.tv_source_lock
@@ -110,6 +110,50 @@
         entity_id: media_player.living_room_tv
       data:
         source: "{{ states('input_select.tv_lock_source') }}"
+
+# ── ADB 增强校验（可选，但强烈推荐）────────────────────────────
+# 为什么需要：云通道的 source 属性有缓存、会停更（米家云尤其明显），
+# 切几次之后 HA 眼里的 source 还是旧值 → 锁等于失效。
+# ADB 直连读的是电视本地真实状态，且能看见「切到 App」这个云通道完全看不见的盲区。
+#
+# 前置：
+#   1. 电视固定 ADB 端口（小米：设置→账号与安全→ADB 调试，或 setprop persist.adb.tcp.port 5555）
+#   2. HA 装 androidtv 集成，实体 remote.<电视>
+#   3. 首次连接要在电视上点「允许调试」，否则日志是 Connection reset by peer
+# 注意：很多电视的 adbd 只允许一个客户端，电脑 adb 连着时 HA 就连不上（反之亦然）。
+- id: tv_source_lock_adb
+  alias: "[电视] 信号源锁定 ADB 增强校验"
+  description: 锁开且电视开着 → 每 30 秒用 ADB 读真实信号源；被切到别的 HDMI 或切到 App，立刻本地切回。
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: time_pattern
+      seconds: "/30"
+  condition:
+    - condition: state
+      entity_id: input_boolean.tv_source_lock
+      state: "on"
+    # 云实体的 on/off 通常准（不准的是 source），用它过滤待机，避免 ADB 空转
+    - condition: state
+      entity_id: media_player.living_room_tv
+      state: "on"
+    # 只处理已验证过 input 编号的源；没验证过的源不要盲目切
+    - condition: template
+      value_template: "{{ states('input_select.tv_lock_source') in ['HDMI 1', 'HDMI 2'] }}"
+  action:
+    - service: androidtv.adb_command
+      continue_on_error: true
+      target:
+        entity_id: remote.living_room_tv
+      data:
+        command: >-
+          T={{ {'HDMI 1': 23, 'HDMI 2': 24}.get(states('input_select.tv_lock_source'), 0) }};
+          R=$(dumpsys activity activities | grep -m1 mResumedActivity);
+          case "$R" in *ExternalSourceActivity*)
+          C=$(settings get global mitv.tvplayer.hdmi.last.source | tr -d '\r');
+          [ "$C" = "$T" ] && exit 0;; esac;
+          am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY
+          -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input $T
 
 # ── 儿童定时锁：启动 / 取消 ─────────────────────────────────────
 - id: tv_lock_countdown_start

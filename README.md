@@ -59,7 +59,7 @@ Home Assistant（HA）把电视接入后，电视对 HA 来说就是一个 `medi
 | 管控 | 手段 | 关键点 |
 |------|------|--------|
 | 音量上限 | 监听 `volume_level` 变化，超限立即拉回 | 0.5% 防抖，避免拉回动作自己触发自己 |
-| 信号源 | 锁定开关打开**无条件强切** + 换台拦截 + 每分钟兜底 | 不信任电视上报的 source 属性（有缓存） |
+| 信号源 | 锁定开关打开**无条件强切** + 换台拦截 + ADB 30 秒增强校验（云通道只留 5 分钟兜底） | 不信任电视上报的 source 属性（会停更），以 ADB 读到的前台/输入口为准 |
 | 定时锁 | HA 原生 `timer` 倒计时 → 到点打开锁定开关 | 到点自动解锁，手动锁永不自动解除 |
 
 ## 三、准备工作
@@ -243,14 +243,14 @@ timer:
 
 > **为什么发两次？** 云端集成（如小米走米家云）的指令偶发限流/丢失，实测单发有时石沉大海，5 秒后补发一次基本 100% 命中。**走局域网直连的集成（Android TV 等）指令可靠，第二条补发可以删掉。**
 
-### 6.2 换台拦截 + 每分钟兜底
+### 6.2 换台拦截（云通道，5 分钟兜底）
 
-锁定期间任何人切走信号源，电视状态一变就自动切回；再加每分钟兜底重发，双保险：
+锁定期间任何人切走信号源，电视状态一变就自动切回；云指令偶发限流，保留 5 分钟兜底：
 
 ```yaml
 - id: tv_source_lock
   alias: "[电视] 信号源锁定"
-  description: 锁定开启时信号源被切走自动切回；云指令偶发限流，每分钟兜底重发直到切回。
+  description: 锁定开启时信号源被切走自动切回（云通道）；云指令偶发限流，降为每 5 分钟兜底。
   mode: single
   max_exceeded: silent
   trigger:
@@ -261,7 +261,7 @@ timer:
     - platform: state
       entity_id: media_player.living_room_tv
     - platform: time_pattern
-      minutes: "/1"
+      minutes: "/5"
   condition:
     - condition: state
       entity_id: input_boolean.tv_source_lock
@@ -279,6 +279,76 @@ timer:
       data:
         source: "{{ states('input_select.tv_lock_source') }}"
 ```
+
+> **为什么从每分钟降到 5 分钟**：见踩坑 15。每分钟一条云端 `select_source` 会把米家云通道打爆（遥控器失灵、电视卡死）。真正的秒级兜底交给 6.3 的 ADB 通道。
+
+### 6.3 ADB 增强校验（推荐，专治"切几次就锁不住"）
+
+这一节是本教程 2026-10 新增的核心修正。老版本只靠云实体的 `source` 属性判断，而云属性有两个硬伤：
+
+1. **有缓存、会停更**：电视切到 App、切了信号源，云属性可能几分钟甚至几小时不刷新；
+2. **看不见 App 盲区**：孩子打开云视听/B 站，云属性仍报原来的 HDMI，HA 认为"没切走"，永远不触发。
+
+结果就是：**刚上锁时好用，切两三次之后锁就形同虚设**。这不是自动化写错了，是判据本身失效。
+
+修法：用 `androidtv` 集成（局域网 ADB 直连）每 30 秒读一次电视**本地真实状态**，发现不对就本地切回，完全不经过云：
+
+```yaml
+- id: tv_source_lock_adb
+  alias: "[电视] 信号源锁定 ADB 增强校验"
+  description: 锁开且电视开着 → 每 30 秒用 ADB 读真实信号源；被切到别的 HDMI 或切到 App，立刻本地切回。
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: time_pattern
+      seconds: "/30"
+  condition:
+    - condition: state
+      entity_id: input_boolean.tv_source_lock
+      state: "on"
+    # 云实体的 on/off 通常准（不准的是 source），用它过滤待机，避免 ADB 空转
+    - condition: state
+      entity_id: media_player.living_room_tv
+      state: "on"
+    # 只处理已验证过 input 编号的源
+    - condition: template
+      value_template: "{{ states('input_select.tv_lock_source') in ['HDMI 1', 'HDMI 2'] }}"
+  action:
+    - service: androidtv.adb_command
+      continue_on_error: true
+      target:
+        entity_id: remote.living_room_tv
+      data:
+        command: >-
+          T={{ {'HDMI 1': 23, 'HDMI 2': 24}.get(states('input_select.tv_lock_source'), 0) }};
+          R=$(dumpsys activity activities | grep -m1 mResumedActivity);
+          case "$R" in *ExternalSourceActivity*)
+          C=$(settings get global mitv.tvplayer.hdmi.last.source | tr -d '\r');
+          [ "$C" = "$T" ] && exit 0;; esac;
+          am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY
+          -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input $T
+```
+
+**判据（小米电视实测）**
+
+| 项 | 命令 / 值 | 说明 |
+| --- | --- | --- |
+| 切源入口 | `am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input N` | `23/24/25` = HDMI 1/2/3，实测 23↔24 可来回切 |
+| 当前是否在信号源界面 | `dumpsys activity activities \| grep mResumedActivity` | 含 `ExternalSourceActivity` 才是在看 HDMI |
+| 当前是哪个 HDMI | `settings get global mitv.tvplayer.hdmi.last.source` | 切源即更新；**只有在前台是 ExternalSourceActivity 时才代表当前源** |
+| 在 App 里 | 前台是别的包名 | 直接切回目标 HDMI，这正是云通道的盲区 |
+
+**三个关键设计点**
+
+1. **必须前台判断 + source 判断双条件**：只看 `last.source` 会误判——孩子切到 App 时这个值还停在最后看的 HDMI，看起来"没被切走"。
+2. **只对验证过 input 编号的源生效**：不同品牌/型号的编号不一样，没验证过的源宁可不动，也不要乱切（切错会黑屏）。
+3. **自包含一行命令**：`androidtv.adb_command` 不回传 stdout（`response: true` 在部分版本报 400），所以让电视自己判断、自己决定切不切，HA 只负责发。
+
+**已验证 / 未验证**
+
+- ✅ 已实测：`23↔24` 能真实切换；`HA → androidtv.adb_command` 服务调用返回 200；电视端 `settings` 会同步更新。
+- ⚠️ 待实测：HA 与电视的 ADB 长连接稳定性。很多电视的 `adbd` **只允许一个客户端**——电脑 `adb` 连着时 HA 连不上（反之亦然），日志表现为 `Connection reset by peer` / `Reading timed out`。排障前先 `adb kill-server` 断开电脑，再看 HA 日志；首次连接还要在电视上点「允许调试」。
+- ⚠️ 待实测：电视待机时 ADB 不可达，自动化会失败（已用云实体 `state == on` 过滤），`continue_on_error: true` 保证不刷错误日志。
 
 ## 七、第四步：儿童观看定时锁
 
@@ -672,7 +742,7 @@ cards:
 
 ## 十二、踩坑记录（省你半天排错）
 
-1. **云通道指令偶发丢失/限流**：走云的集成（如小米 Miot）`select_source`、`volume_set` 单发有时不生效。对策：动作里加 `continue_on_error: true`，关键切换 5 秒后补发一次，再加每分钟兜底。局域网直连的集成没有这个问题。
+1. **云通道指令偶发丢失/限流**：走云的集成（如小米 Miot）`select_source`、`volume_set` 单发有时不生效。对策：动作里加 `continue_on_error: true`，关键切换 5 秒后补发一次，再加 5 分钟兜底（别用每分钟，见踩坑 15）。局域网直连的集成没有这个问题。
 2. **`source` 属性有缓存，不可全信**：实际换了信号源，属性可能还报旧值。所以「锁定生效那一刻」必须无条件强切，不能先判断 `cur != want` 再切——否则永远不触发。这也是本教程 6.1 与 6.2 分成两条自动化的原因。
 3. **音量锁防自触发**：拉回动作本身会再触发一次音量变化事件，条件里用 `cur - target > 0.005`（0.5% 死区）掐掉回弹，不然会无限循环拉回。
 4. **锁定开关（input_boolean）本身不触发任何东西**：只开开关不切源是新手最常见的坑，务必有一条「开关打开 → 执行切换」的自动化。
@@ -688,10 +758,11 @@ cards:
 13. **信号源锁锁不住「电视内 App」（云视听 / 爱奇艺等）——这是机制盲区，先说结论**：锁只认 `media_player` 的 `source` 属性（物理信号源 HDMI / TV）。孩子在电视桌面里打开云视听这类内容 App，**不会切换信号源**，`source` 属性不变 → HA 判定"还在锁定的 HDMI 1"，不触发切回。所以本方案**只能锁物理信号源（机顶盒 / 游戏机所在的 HDMI 口），锁不住电视自带的流媒体 App**。要在 App 层也管住，得另走 ADB / 应用层方案（见下两条），但实测弯路不少。
 14. **小米 Miot 云端通道极不稳定，「切回」依赖它，断线锁就暂时失效**：实测一晚断 3 次（其中一次长达 85 分钟零上报）。家里局域网 ping 电视 **0 丢包、0.36ms**，排除了自家网络——断的是小米云。后果：云端断开期间孩子切走信号源，HA 既收不到变化、也下不了切回指令，锁等于暂时失效。**局域网直连的电视（索尼 / TCL / 雷鸟等走 Android TV 集成）没有这问题**，这是"走云"必须接受的代价。要缓解，只能在锁定时加飞书告警（失联即通知家长），而不是硬扛云端。
 15. **⛔ 红线：别对小米云实体做 `time_pattern` 高频 `select_source`（会打爆电视）**：为补第 13 条 App 盲区的漏，我曾加"每分钟无条件切回 HDMI 1"。结果：每分钟一条云端指令把小米电视（经 xiaomi_home 云端通道）打爆 → **遥控器失灵、电视卡死**。实测当时手动 `select_source(HDMI 2)` 下发返回 200，电视毫无反应，HA 侧 `source` 110+ 秒不更新 → 云端通道**双向皆断**（状态不上报、命令也不执行），断线时还每分钟狂发指令 = 雪上加霜。**真要强制踢回**：必须前置"电视 `last_updated` < 2 分钟才发"的门禁（失联时不发），且间隔 ≥5 分钟。
-16. **ADB 补 App 盲区的方案，实测后放弃**：主路由常驻 ADB 守护读前台 App，违规就发 webhook 让 HA 切回 / 按 Home 键打断云视听——思路通，但**小米电视一重启「网络调试」就自动关闭**，守护随之失效，没有持久意义，遂撤掉。给后来者的建议：想用 ADB 先确认你家电视重启后 `adb` 是否还活着（多数国产电视默认就关），别像我一样白折腾一晚。
+16. **ADB 补 App 盲区的方案，当年实测后放弃（2026-10 已重新启用）**：主路由常驻 ADB 守护读前台 App，违规就发 webhook 让 HA 切回——思路通，但**当年小米电视一重启「网络调试」就自动关闭**，守护随之失效，遂撤掉。后来把端口写进持久属性（`setprop persist.adb.tcp.port 5555`）并确认系统设置里调试常开，重启后 `5555` 仍在监听，才重新启用。**用前必须确认三件事**：① `getprop persist.adb.tcp.port` 有值；② `settings get global adb_enabled` 为 1；③ 真重启一次，`adb connect` 仍然成功。三者缺一，ADB 守护迟早会在某次重启后静默失效。
 17. **（定位用）电视真实 IP 可能在旁路由 / 二级网段，别认错设备**：我家电电视真实 IP 是 `192.168.8.103`（在旁路由下的二级网段），而 `192.168.3.191` 是**另一台**小米设备。做 ADB 调试或写 IP 白名单前，先用 `adb connect <真IP>:5555` 确认连的是电视本身，别把指令发到别人设备上（同理，HA 里同名实体也要核对 `entity_id`，别张冠李戴）。
 18. **⛔ 红线：禁用旧桌面（`com.mitv.tvhome`）会连带弄丢遥控「信号源 / Input」键**：mulan 固件的 Input 键（`KEYCODE_TV_INPUT=178`）是**前台应用**接管的，旧桌面是唯一接管方；而 Google TV 那套 `com.android.tv.action.VIEW_INPUTS` 在这固件上**没有接收方**，真正的信号源面板藏在 `com.droidlogic.tvinput/.shortcut.ShortCutActivity`（Amlogic 输入框架）里。给电视做任何「系统级优化」（去广告 / 换桌面）前，**先确认旧桌面状态**——本次实测：禁用它 → 信号源键失灵；恢复启用 → 立即复原。要换桌面就得自己补这个键（做法见[附录 A.5](#a5-信号源键修复本次核心)）。
 19. **小米电视（mulan）走的是有线网卡，`dumpsys wifi` 显示 DISCONNECTED 是正常现象**：这台机器根本没有 `wlan0`，网络走 `eth0`。排障时看到「Wi-Fi 已断开」别顺着查网络——`ip addr` 一眼就能确认。同理 ADB 偶发超时也未必是故障，ping 通 + 5555 重连即可，多为瞬时抖动。
+20. **云 `source` 属性会停更，这才是「切几次就锁不住」的真正原因（2026-10 定论）**：实测米家云实体 `media_player.xiaomi_cn_...` 的 `last_updated` 停在几个小时前，期间电视切 App、切 HDMI，`source` 一直报旧值。而锁的唯一判据就是这个属性 → 属性不动，自动化永远不触发。表现极具迷惑性：**刚上锁时有效，切两三次之后就怎么切都不管**。修法见 6.3——用 `androidtv` 集成走局域网 ADB，每 30 秒读 `dumpsys activity activities`（前台是不是 `ExternalSourceActivity`）+ `settings get global mitv.tvplayer.hdmi.last.source`（在哪个 HDMI），电视自己判断、自己切回；云通道降为 5 分钟兜底。**别再靠提高云指令频率去救，那只会打爆通道（踩坑 15）。**
 
 ## 十三、可以继续扩展的方向
 
