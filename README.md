@@ -4,7 +4,7 @@
 >
 > 方案与品牌无关：小米、索尼、TCL、Apple TV、各类电视盒子……只要电视能接入 Home Assistant，这套教程就能直接套用。**本文以小米电视为例**，其他品牌只是接入方式不同（见「三、准备工作」对照表），自动化部分完全通用。
 >
-> **本仓库四个文件**：`README.md`（教程正文）｜`tv_lock_automations.yaml`（21 条自动化合集，可直接粘贴）｜`helpers-example.yaml`（辅助元素定义）｜`scripts-example.yaml`（5 个家长一键情景脚本）。
+> **本仓库四个文件**：`README.md`（教程正文）｜`tv_lock_automations.yaml`（23 条自动化合集，可直接粘贴）｜`helpers-example.yaml`（辅助元素定义）｜`scripts-example.yaml`（5 个家长一键情景脚本）。
 >
 > 基础篇（音量锁 / 信号源锁 / 单次定时锁 / 倒计时暂停）看第五～七章；进阶篇（每日配额 / 分时段模式 / 续杯 / 周报）看第八～十章。**只想快速上手的话，只做基础篇就够了。**
 
@@ -845,6 +845,7 @@ cards:
 22. **一次只能连一个 adb 客户端，电脑连着 HA 就连不上（反之亦然）**：小电视的 adbd 是单会话的。电脑 `adb connect` 上去之后，HA 的 androidtv 立刻刷 `Connection reset by peer`，实体变 `unknown`、所有 ADB 自动化空转。**排障或抓 dumpsys 用完立刻 `adb kill-server`**，别让电脑的 adb 常驻；HA 侧重连一般 10 秒左右自愈，不行就 `homeassistant.reload_config_entry`（androidtv 条目）重载一次。
 23. **云实体的 `state` 也会停更，别拿它判断开关机（2026-10-27 实测，代价是 385 分钟的假数据）**：一直以为云实体只有 `source` 会停更、`on/off` 是准的——**错**。实测电视关机后 `media_player.xiaomi_cn_...` 仍长期停在 `on`（`last_updated` 停在几小时前不动）。后果两个：①「今日观看分钟累计」在电视关机后继续每分钟 +1，一天下来虚高到 385 分钟；②「关机暂停观看倒计时 / 开机继续」永远不触发，锁定倒计时和续杯倒计时关机后照常空跑。修法：**所有开关机判据统一改成 androidtv 实体** `media_player.android_tv_<ip>` 的状态白名单 `['playing','paused','idle','on']`——正常开机是 `playing/paused/idle`（实测待机桌面 = `paused`），关机是 `off/standby`，ADB 断了是 `unavailable`，后三种都落在白名单外。**触发要用 template trigger，`to: 'off'` 抓不到 `unavailable`。**
     顺带一个显示坑：「本周累计」比「今日已看」还小，不是数据坏了——`ben_zhou` 只累计到昨天，0:01 才把今天并进去。周报文案要算 `ben_zhou + jin_ri`，别只报 `ben_zhou`。
+    这个白名单不是拍脑袋定的，有源码依据：`site-packages/androidtv/androidtv/base_androidtv.py` 里 `screen_on is None` → state 为 None（HA 显示 `unavailable`）、`not screen_on` → `STATE_OFF`、`not awake` → `STATE_STANDBY`，只有「屏幕亮且已唤醒」才可能落到 `playing/paused/idle`。所以三种非开机态全在白名单外，**关机必然停表**。
 
 ## 十三、可以继续扩展的方向
 
@@ -971,6 +972,8 @@ dumpsys window windows | grep mCurrentFocus
 
 ### A.7 收尾：去广告收口 + 免 ROOT 兜底拦截
 
+> ⛔ **已废弃（2026-10-27 定案，别照抄上线）**：这套最终没保留。`dnsfilter.android` 已从电视卸载，对应的 HA 看门狗自动化（unique_id `tv_adblock_watchdog_20261026`）也已删除、孤儿实体从注册表清掉。放弃原因：电视的网关和 DNS 都指向 `192.168.8.1`（主路由），旁路由上又没有 adblock 插件，想让流量改走旁路由就得改电视静态 IP——而这只能拿遥控器一项项手点，收益不值这个折腾。**下面保留的是当时的完整实现过程，供以后翻查。**
+
 > 2026-10-26 追加：去广告清单已到「最优」状态，再叠加一个免 ROOT 的 DNS 层拦截器兜底。
 
 **1. 禁用小米自带屏保 `com.mitv.screensaver`**
@@ -987,9 +990,11 @@ dumpsys window windows | grep mCurrentFocus
 - 建议进 App 开「Autostart / 开机自启」，使拦截在重启后自动恢复。
 - 注意：DNS 层只能拦「域名解析型」广告，对把广告域名写死 IP、或走自家 CDN 的应用内广告无效（那种本来就少）；它和已禁的 28 个系统包是**互补**关系，不是重复。
 
-**当前去广告总状态（2026-10-26）**：系统层（推送/商城/支付/统计/小米桌面广告位/小米视频）已 28 包禁用全灭；Aerial 接管 Home 看不到原桌面广告；personalDNSfilter 再兜底 DNS 层应用内广告。**全程免 ROOT、全可逆**（`pm enable` 任一项即可恢复）。
+**当时的总状态（2026-10-26，⚠️ 已过期，见本节顶部废弃说明）**：系统层（推送/商城/支付/统计/小米桌面广告位/小米视频）已 28 包禁用全灭；Aerial 接管 Home 看不到原桌面广告；personalDNSfilter 再兜底 DNS 层应用内广告。**全程免 ROOT、全可逆**（`pm enable` 任一项即可恢复）。系统包禁用这部分**至今仍在生效**，废弃的只是 personalDNSfilter 那一层。
 
 ### A.8 重启后拦截自动恢复：交给 Home Assistant 看门狗（2026-10-26 终版）
+
+> ⛔ **同样已废弃（2026-10-27）**：看门狗自动化 `automation.dian_shi_yan_gao_lan_jie_shou_hu_personaldnsfilter_zi_hui_fu` 已删除，电视上也早已没有 `dnsfilter.android`，所以它一直显示 `unavailable`。本节仅作为「用 HA 盯电视端 ADB 状态」的实现范式保留——**里面的 ADB 集成接入方式、`adb_response` 回显拿法、`automation.reload` 热重载这些经验仍然有效**（信号源锁、App 锁都在用），只是不要再去拉起 dnsfilter。
 
 > 痛点：personalDNSfilter 的 **VPN 在电视重启后不会自起**——小米系统级「自启动白名单」会杀它的 `BootUpReceiver`（监听 `BOOT_COMPLETED`），加上 Android 9 后台启动限制、本固件又无 `cmd vpn` 的 always-on 能力。结果：每次重启，拦截静默失效，要人手动进 App 点一下。
 > 试过两条路，最终选 **HA**：
@@ -1012,7 +1017,19 @@ dumpsys window windows | grep mCurrentFocus
 - **落地方式（已更正）**：本机 HA 实为 **YAML 模式**——自动化存 `/config/automations.yaml`（bind 到主路由 `/mnt/sata4-4/homeassistant/automations.yaml`，`.storage` 里并无 automations 文件；之前误判成 UI 模式）。经主路由跳板（paramiko + SFTP）把看门狗自动化**直接追加**进 `automations.yaml`（原文件先 `cp` 备份）。**热重载用 `automation.reload`**（`homeassistant.reload_automations` 在 2026.x 已不存在，调它会返回 `service_not_found`，别再用它，也不必重启核心）。加载后实体 `automation.dian_shi_yan_gao_lan_jie_shou_hu_personaldnsfilter_zi_hui_fu`（中文 alias 自动转拼音 slug）state=**on**。
 - **实测验证**：本机 adb 强制 `am force-stop dnsfilter.android` 使 `tun0` DOWN；再让 HA 跑该命令 → `tun0` 自动回到 `UP`（`inet 10.0.2.15/24`），`doubleclick.net` 重新解析到 `127.0.0.1`。端到端通过。
 
-**一句话**：电视重启后，HA 会在 5 分钟内（或你一开机）自动把广告拦截拉起来，不用再手动管。
+**一句话（⚠️ 该承诺已作废，2026-10-27 方案终止）**：~~电视重启后，HA 会在 5 分钟内（或你一开机）自动把广告拦截拉起来~~ —— 现在不装了，也就不需要了。
+
+## 更新日志
+
+> 按日期倒序，只记「改了什么 + 为什么」，细节点进对应章节。
+
+- **2026-10-27｜修「电视关机后还在计时」**：查出来云实体 **`state` 也会停更**（不只是 `source`），关机后长期报 `on`，导致今日观看分钟虚高到 392 分钟、关机暂停倒计时永不触发。把 4 条自动化的开关机判据统一换成 ADB 实体白名单（观看累计 / 关机暂停 / 开机继续 / 睡眠模式防偷看），触发改 template trigger。详见踩坑 23。
+- **2026-10-27｜信号源锁 ADB 校验 30s → 10s**：切走后最多 10 秒拉回，消掉"切几次就锁不住"的观感。
+- **2026-10-27｜删除广告拦截看门狗**：personalDNSfilter 方案终止（见 A.7 / A.8 顶部废弃说明），残留的 `unavailable` 自动化实体已从注册表清掉。
+- **2026-10-27｜周报「本周累计」改为含今日**：`ben_zhou` 只含到昨天，面板上会出现「今日 385 > 本周 295」的怪数。
+- **2026-10-27｜禁用名单补 CIBN 酷喵 `com.cibn.tv`**：共 7 个娱乐包（B站小电视 / 云视听极光 / QQ音乐 / 西瓜鲜时光 / 电视家 / 当贝市场 / 酷喵）。
+- **2026-10-27｜新增 6.4「锁 App」**：只锁信号源锁不住内容 App，改为锁开时 `pm disable-user` 娱乐类包、锁关 `pm enable` 恢复，2 分钟对账兜底。
+- **2026-10-26｜Aerial 接管桌面 + 系统包精简 28 个 + 去广告收口**（Aerial + 无障碍守护 + 包禁用清单）。
 
 ## Star 历史
 
