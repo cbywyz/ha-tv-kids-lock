@@ -14,6 +14,7 @@
 - [ha-hualing-fan-broadlink](https://github.com/cbywyz/ha-hualing-fan-broadlink) —— 华凌风扇红外遥控接入 HA（Broadlink + 8 键编码库）
 - [gree-yapqf-broadlink-smartir](https://github.com/cbywyz/gree-yapqf-broadlink-smartir) —— 格力空调 Broadlink+SmartIR 接入 HA
 - [phicomm-aircat-m1](https://github.com/cbywyz/phicomm-aircat-m1) —— 斐讯悟空 M1 空气检测仪复活记（自建集成）
+- [phicomm-t1-android-tv](https://github.com/cbywyz/phicomm-t1-android-tv) —— 斐讯 T1 盒子接入 HA：adb 遥控面板 / 折叠数字键盘 / **中文输入** / 开机优化（同一套 HA 底座，接进来之后可以直接套用本仓库的管控）
 
 ---
 - [cbywyz/jdcloud-nezha-ax3000-rescue](https://github.com/cbywyz/jdcloud-nezha-ax3000-rescue) —— 京东云哪吒 AX3000 (RE-OS-03U) 刷机变砖与救砖完整实录（TTL/U-Boot 救援、固件选型、eMMC 修复）
