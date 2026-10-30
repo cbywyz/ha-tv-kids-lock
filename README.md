@@ -182,7 +182,7 @@ timer:
           -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input $T
 ```
 
-> 命令回显看目标 `media_player` 的 `adb_response` 属性；`entity_id` 必须写 `media_player.*`，写 `remote.*` 会静默不执行（[踩坑 21](docs/troubleshooting.md)）。一次只能一个 adb 客户端连电视（[踩坑 22](docs/troubleshooting.md)）。
+> 命令回显看目标 `media_player` 的 `adb_response` 属性；`entity_id` 必须写 `media_player.*`，写 `remote.*` 会静默不执行（[踩坑 21](docs/troubleshooting.md)）。一次只能一个 adb 客户端连电视（[踩坑 22](docs/troubleshooting.md)）。要让 ADB 一直在线（重启不丢、运行时常开），见 [docs/keep-adb-alive.md](docs/keep-adb-alive.md)。
 
 **锁 App（只锁信号源锁不住内容 App）**：只锁信号源 = 假锁——孩子从桌面打开云视听/B站，`source` 不变就不触发；而且锁回的 HDMI 若无信号会弹回桌面。做法：锁开就 `pm disable-user` 掉娱乐类 App，锁关 `pm enable` 恢复（全程可逆、不碰系统分区、不需 root）：
 
@@ -267,6 +267,7 @@ entities:
 ## 八、详细文档（避坑 & 电视本体折腾）
 
 - 🚀 [进阶玩法（每日配额 / 分时段 / 续杯 / 周报）](docs/advanced.md) —— 基础三道锁之上的精细管控，完整机制 + yaml 索引。
+- 🔌 [让 ADB 一直可用](docs/keep-adb-alive.md) —— 固化 persist 端口 + 三步验收 + 单会话陷阱，信号源锁 / App 锁的 ADB 通道前提。
 - 📌 [踩坑记录（23 条）](docs/troubleshooting.md) —— 云通道丢指令、`source` 缓存、0.5% 死区、Jinja `{{ set }}` 坑、ADB 单会话、`remote.*` 静默不执行、云 `state` 停更……排错前先翻。
 - 🔧 [小米电视系统级折腾](docs/xiaomi-system-tweaks.md) —— 去广告（28 包禁用）、Aerial 极简桌面、信号源键修复、personalDNSfilter 兜底（已废弃说明保留）。全部走 ADB、可逆。
 

@@ -17,7 +17,7 @@
 ## A.2 ADB 连接（mulan 固件特性，重要）
 
 1. 电视：设置里打开「USB 调试」→ `adb connect 192.168.8.103:5555`；
-2. **重启后网络 ADB 实测会自起**：`persist.adb.tcp.port=5555` 已固化（重启后仍在，2026-10-26 重启验证 ~10s 恢复连接）；若某次连不上再手动开「USB/网络调试」。旧笔记「重启必关 ADB」是基于未固化 persist 属性的情况，已不再成立。
+2. **重启后网络 ADB 实测会自起**：`persist.adb.tcp.port=5555` 已固化（重启后仍在，2026-10-26 重启验证 ~10s 恢复连接）；若某次连不上再手动开「USB/网络调试」。旧笔记「重启必关 ADB」是基于未固化 persist 属性的情况，已不再成立。端口固化 + 启用验收的完整步骤见 [docs/keep-adb-alive.md](keep-adb-alive.md)。
 3. 不想装 adb：用 cleanyourtv 的 `tools/tv.py`（纯 Python 实现 ADB 协议）；
 4. **文件传输的坑**：这台电视 `adb pull` 报 `open failed`、往 `/sdcard` 写进去是 0 字节 → 实用解法是 `cat` + base64 分块读回。注意每个 64KB 块 base64 后自带 `==` 补位，**必须按行独立解码再拼字节**，直接拼字符串解码会错位。
 
